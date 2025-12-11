@@ -2,6 +2,8 @@
 
 This project is a Laravel-based platform for teams that annotate text data together. It pairs a streamlined annotator workbench with an administrator console so you can plan packages, track sessions, and requeue low-quality annotations without leaving the browser.
 
+> 🎓 Built by **rnlyone (Roesman Ridwna Raja)** to power NLP-focused research initiatives, with a special emphasis on high-quality manual text annotation workflows.
+
 ## Key Features
 
 - **Annotator workbench** – Assigned annotators get a focused view with category shortcuts, keyboard-friendly controls, and automatic routing to unannotated records only.
