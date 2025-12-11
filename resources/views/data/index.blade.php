@@ -195,6 +195,7 @@ $(document).ready(function() {
     const $csvProgressWrapper = $('#csvUploadProgressWrapper');
     const $csvProgressBar = $('#csvUploadProgressBar');
     const $csvProgressLabel = $('#csvUploadProgressLabel');
+    let lastCsvProgress = 0;
 
     const setCsvProgress = (percent, labelText = '') => {
         const value = Math.max(0, Math.min(100, Number(percent) || 0));
@@ -209,6 +210,7 @@ $(document).ready(function() {
         $csvProgressWrapper.addClass('d-none');
         $csvProgressBar.css('width', '0%').attr('aria-valuenow', 0);
         $csvProgressLabel.text('');
+        lastCsvProgress = 0;
     };
 
     const dataTable = $table.DataTable({
@@ -512,18 +514,30 @@ $(document).ready(function() {
             xhr: function() {
                 const xhr = new window.XMLHttpRequest();
                 xhr.upload.addEventListener('progress', function(evt) {
-                    if (evt.lengthComputable) {
-                        const percent = Math.round((evt.loaded / evt.total) * 100);
-                        setCsvProgress(percent, `Uploading ${percent}%`);
+                    let percent;
+                    if (evt.lengthComputable && evt.total > 0) {
+                        percent = Math.round((evt.loaded / evt.total) * 100);
                     } else {
-                        setCsvProgress(50, 'Uploading…');
+                        percent = lastCsvProgress + 5;
                     }
+                    percent = Math.max(percent, lastCsvProgress + 1);
+                    percent = Math.min(percent, 95);
+                    lastCsvProgress = percent;
+                    setCsvProgress(percent, `Uploading ${percent}%`);
+                });
+                xhr.upload.addEventListener('load', function() {
+                    lastCsvProgress = 100;
+                    setCsvProgress(100, 'Upload complete, processing import...');
+                });
+                xhr.upload.addEventListener('error', function() {
+                    setCsvProgress(0, 'Upload failed');
                 });
                 return xhr;
             },
             beforeSend: function() {
                 $('#csvUploadButton').prop('disabled', true).text('Uploading...');
-                setCsvProgress(0, 'Uploading 0%');
+                lastCsvProgress = 0;
+                setCsvProgress(1, 'Uploading 1%');
             },
             success: function(response) {
                 setCsvProgress(100, 'Upload complete, processing import...');
