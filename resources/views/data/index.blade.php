@@ -99,12 +99,6 @@
                                 <label for="csvFile" class="form-label">Upload CSV File</label>
                                 <input type="file" class="form-control" id="csvFile" name="file" accept=".csv" required>
                                 <div class="form-text">Accepted format: .csv</div>
-                                <div class="mt-3 d-none" id="csvUploadProgressWrapper">
-                                    <div class="progress" style="height: 6px;">
-                                        <div class="progress-bar" id="csvUploadProgressBar" role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
-                                    </div>
-                                    <small class="text-muted d-block mt-1" id="csvUploadProgressLabel"></small>
-                                </div>
                             </div>
 
                             <div id="csvColumnMapping" style="display: none;">
@@ -192,26 +186,6 @@
 $(document).ready(function() {
     const $table = $('.datatables-data');
     const $overlay = $('#dataTableOverlay');
-    const $csvProgressWrapper = $('#csvUploadProgressWrapper');
-    const $csvProgressBar = $('#csvUploadProgressBar');
-    const $csvProgressLabel = $('#csvUploadProgressLabel');
-    let lastCsvProgress = 0;
-
-    const setCsvProgress = (percent, labelText = '') => {
-        const value = Math.max(0, Math.min(100, Number(percent) || 0));
-        $csvProgressWrapper.removeClass('d-none');
-        $csvProgressBar.css('width', `${value}%`).attr('aria-valuenow', value);
-        if (labelText) {
-            $csvProgressLabel.text(labelText);
-        }
-    };
-
-    const resetCsvProgress = () => {
-        $csvProgressWrapper.addClass('d-none');
-        $csvProgressBar.css('width', '0%').attr('aria-valuenow', 0);
-        $csvProgressLabel.text('');
-        lastCsvProgress = 0;
-    };
 
     const dataTable = $table.DataTable({
         processing: true,
@@ -511,36 +485,10 @@ $(document).ready(function() {
             data: formData,
             processData: false,
             contentType: false,
-            xhr: function() {
-                const xhr = new window.XMLHttpRequest();
-                xhr.upload.addEventListener('progress', function(evt) {
-                    let percent;
-                    if (evt.lengthComputable && evt.total > 0) {
-                        percent = Math.round((evt.loaded / evt.total) * 100);
-                    } else {
-                        percent = lastCsvProgress + 5;
-                    }
-                    percent = Math.max(percent, lastCsvProgress + 1);
-                    percent = Math.min(percent, 95);
-                    lastCsvProgress = percent;
-                    setCsvProgress(percent, `Uploading ${percent}%`);
-                });
-                xhr.upload.addEventListener('load', function() {
-                    lastCsvProgress = 100;
-                    setCsvProgress(100, 'Upload complete, processing import...');
-                });
-                xhr.upload.addEventListener('error', function() {
-                    setCsvProgress(0, 'Upload failed');
-                });
-                return xhr;
-            },
             beforeSend: function() {
                 $('#csvUploadButton').prop('disabled', true).text('Uploading...');
-                lastCsvProgress = 0;
-                setCsvProgress(1, 'Uploading 1%');
             },
             success: function(response) {
-                setCsvProgress(100, 'Upload complete, processing import...');
                 let message = response.message;
                 if (response.errors && response.errors.length > 0) {
                     message += '<br><br><strong>Errors:</strong><br>' + response.errors.join('<br>');
@@ -582,7 +530,6 @@ $(document).ready(function() {
             },
             complete: function() {
                 $('#csvUploadButton').prop('disabled', false).text('Upload');
-                setTimeout(resetCsvProgress, 800);
             }
         });
     });
@@ -602,7 +549,7 @@ $(document).ready(function() {
                 }
 
                 const headers = rows[0];
-                if (headers.length) {
+                if (headers.length) {o
                     headers[0] = headers[0].replace(/^\uFEFF/, '');
                 }
                 const idSelect = $('#idColumnSelect');

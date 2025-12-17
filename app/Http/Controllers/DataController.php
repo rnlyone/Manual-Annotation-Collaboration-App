@@ -135,12 +135,24 @@ class DataController extends Controller
 
         $query = Data::query()->select(['id', 'content', 'created_at']);
 
+        $excludeIds = collect();
+        if ($request->filled('exclude_ids_json')) {
+            $decoded = json_decode($request->input('exclude_ids_json'), true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $excludeIds = collect($decoded)->filter()->map(fn ($id) => (string) $id);
+            }
+        }
+
         if ($includePackagesCount) {
             $query->withCount(['packageAssignments as packages_count']);
         }
 
         if ($onlyUnassigned) {
             $query->whereDoesntHave('packageAssignments');
+        }
+
+        if ($excludeIds->isNotEmpty()) {
+            $query->whereNotIn('id', $excludeIds);
         }
 
         $searchValue = $request->input('search');

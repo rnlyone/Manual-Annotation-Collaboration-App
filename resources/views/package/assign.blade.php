@@ -36,6 +36,43 @@
         background-color: rgba(255, 193, 7, 0.12);
     }
 
+    .random-select-row {
+        gap: 0.75rem;
+    }
+
+    .random-select-row .form-check {
+        margin-bottom: 0;
+    }
+
+    .random-select-control {
+        min-width: 220px;
+    }
+
+    .random-select-control .input-group-text {
+        font-weight: 600;
+    }
+
+    .random-select-control small {
+        font-size: 0.75rem;
+    }
+
+    .table-header-action-btn {
+        padding: 0.15rem 0.5rem;
+        font-size: 0.75rem;
+        line-height: 1.1;
+    }
+
+    @media (max-width: 991.98px) {
+        .random-select-row {
+            flex-direction: column;
+            align-items: flex-start !important;
+        }
+
+        .random-select-control {
+            width: 100%;
+        }
+    }
+
     @media (max-width: 767.98px) {
         .dataTables_wrapper .row:last-child > div {
             justify-content: center;
@@ -113,14 +150,24 @@
                                         <h6 class="mb-1">Unselected Data</h6>
                                         <small class="text-muted">Choose data to add into this package</small>
                                     </div>
-                                    <div class="d-flex flex-column gap-2 align-items-start align-items-lg-end">
-                                        <div class="form-check">
+                                    <div class="d-flex random-select-row flex-wrap justify-content-lg-end align-items-start">
+                                        <div class="form-check" style="margin-right: 3%">
                                             <input class="form-check-input" type="checkbox" id="onlyUnassignedCheckbox" checked>
                                             <label class="form-check-label" for="onlyUnassignedCheckbox">Only unassigned data</label>
                                         </div>
-                                        <div class="form-check">
-                                            <input type="checkbox" class="form-check-input" id="selectAllCheckbox">
-                                            <label class="form-check-label" for="selectAllCheckbox">Select all filtered</label>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="selectAllFilteredButton">
+                                            <i class="bx bx-check-double me-1"></i>Select all filtered
+                                        </button>
+                                        <div class="random-select-control">
+                                            <label for="randomSelectCount" class="form-label text-muted small mb-1">Random picker</label>
+                                            <div class="input-group input-group-sm">
+                                                <span class="input-group-text">Qty</span>
+                                                <input type="number" min="1" class="form-control" id="randomSelectCount" placeholder="e.g. 10">
+                                                <button type="button" class="btn btn-outline-primary" id="randomSelectButton">
+                                                    <i class="bx bx-shuffle me-1"></i>Pick
+                                                </button>
+                                            </div>
+                                            <small class="text-muted">Respects current filters.</small>
                                         </div>
                                     </div>
                                 </div>
@@ -128,8 +175,10 @@
                                     <table class="table table-hover" id="unselectedDataTable">
                                         <thead>
                                             <tr>
-                                                <th style="width: 50px;" class="text-center">
-                                                    <input type="checkbox" class="form-check-input" id="unselectedHeaderCheckbox">
+                                                <th style="width: 70px;" class="text-center">
+                                                    <button type="button" class="btn btn-outline-secondary btn-sm table-header-action-btn" id="selectCurrentPageButton" title="Select rows on this page">
+                                                        <i class="bx bx-list-check"></i>
+                                                    </button>
                                                 </th>
                                                 <th style="width: 60px;">#</th>
                                                 <th>Content</th>
@@ -147,9 +196,12 @@
                                         <h6 class="mb-1">Selected Data</h6>
                                         <small class="text-muted">Currently assigned (unsaved changes included)</small>
                                     </div>
-                                    <div class="d-flex gap-2 align-items-center">
+                                    <div class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
                                         <button type="button" class="btn btn-outline-danger btn-sm" id="deselectFilteredSelectedButton">
                                             Deselect all filtered
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="deselectAllSelectedButton">
+                                            Deselect all
                                         </button>
                                     </div>
                                 </div>
@@ -370,13 +422,18 @@ $(document).ready(function() {
     const $saveDeselectionsButtonLabel = $('#saveDeselectionsButtonLabel');
     const $saveDeselectionsBadge = $('#saveDeselectionsBadge');
     const $deselectFilteredSelectedButton = $('#deselectFilteredSelectedButton');
+    const $deselectAllSelectedButton = $('#deselectAllSelectedButton');
     const $onlyUnassignedCheckbox = $('#onlyUnassignedCheckbox');
-    const $selectAllCheckbox = $('#selectAllCheckbox');
+    const $selectAllFilteredButton = $('#selectAllFilteredButton');
     const $saveUserAssignmentsButton = $('#saveUserAssignmentsButton');
     const $saveUserAssignmentsLabel = $('#saveUserAssignmentsLabel');
     const $saveUserAssignmentsBadge = $('#saveUserAssignmentsBadge');
-    const $unselectedHeaderCheckbox = $('#unselectedHeaderCheckbox');
     const $selectedHeaderCheckbox = $('#selectedHeaderCheckbox');
+    const $randomSelectInput = $('#randomSelectCount');
+    const $randomSelectButton = $('#randomSelectButton');
+    const $selectCurrentPageButton = $('#selectCurrentPageButton');
+    const randomSelectButtonDefaultHtml = $randomSelectButton.html();
+    const selectAllFilteredButtonDefaultHtml = $selectAllFilteredButton.html();
 
     const formatContent = (content = '') => {
         const trimmed = content ?? '';
@@ -435,16 +492,6 @@ $(document).ready(function() {
         $selectedCountBadge.text(selectedData.size);
     };
 
-    const syncUnselectedHeaderCheckbox = () => {
-        const enabledBoxes = $unselectedTableEl.find('.unselected-select-checkbox:enabled');
-        if (!enabledBoxes.length) {
-            $unselectedHeaderCheckbox.prop('checked', false);
-            return;
-        }
-        const checkedEnabled = enabledBoxes.filter(':checked');
-        $unselectedHeaderCheckbox.prop('checked', checkedEnabled.length === enabledBoxes.length);
-    };
-
     const syncSelectedHeaderCheckbox = () => {
         const checkboxes = $selectedTableEl.find('.selected-select-checkbox');
         if (!checkboxes.length) {
@@ -483,12 +530,14 @@ $(document).ready(function() {
         }
     };
 
-    const addSelectedRow = (rowData) => {
+    const addSelectedRow = (rowData, options = {}) => {
         if (!rowData || !rowData.id) {
-            return;
+            return false;
         }
 
+        const silent = !!options.silent;
         const id = String(rowData.id);
+        const alreadySelected = selectedData.has(id);
         selectedData.add(id);
         const isUnsaved = !lastSavedSelection.has(id);
         selectedRowsMap.set(id, {
@@ -504,8 +553,11 @@ $(document).ready(function() {
             pendingDeselections.delete(id);
             updateDeselectionButton();
         }
-        refreshSelectedTable();
-        updateSelectedCountBadge();
+        if (!silent) {
+            refreshSelectedTable();
+            updateSelectedCountBadge();
+        }
+        return !alreadySelected;
     };
 
     const removeSelectedRow = (id, options = {}) => {
@@ -524,6 +576,111 @@ $(document).ready(function() {
             updateDeselectionButton();
         }
     };
+
+    const setRandomSelectButtonLoading = (isLoading) => {
+        if (isLoading) {
+            $randomSelectButton.prop('disabled', true).addClass('opacity-75').html('<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Picking');
+            return;
+        }
+        $randomSelectButton.prop('disabled', false).removeClass('opacity-75').html(randomSelectButtonDefaultHtml);
+    };
+
+    const setSelectAllFilteredButtonLoading = (isLoading) => {
+        if (isLoading) {
+            $selectAllFilteredButton.prop('disabled', true).addClass('opacity-75').html('<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Selecting');
+            return;
+        }
+        $selectAllFilteredButton.prop('disabled', false).removeClass('opacity-75').html(selectAllFilteredButtonDefaultHtml);
+    };
+
+    const pickRandomItems = (pool, count) => {
+        const working = pool.slice();
+        for (let i = working.length - 1; i > 0; i -= 1) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [working[i], working[j]] = [working[j], working[i]];
+        }
+        return working.slice(0, count);
+    };
+
+    const requestRandomSelection = (desiredCount) => {
+        setRandomSelectButtonLoading(true);
+
+        $.ajax({
+            url: "{{ route('data.allIds') }}",
+            type: 'POST',
+            data: {
+                _token: token,
+                search: unselectedTable.search(),
+                only_unassigned: $onlyUnassignedCheckbox.is(':checked') ? 1 : 0,
+                include_packages_count: 1,
+                exclude_ids_json: JSON.stringify(Array.from(selectedData)),
+            }
+        })
+        .done(function(response) {
+            const pool = (response.data || []).filter(item => item && item.id && !selectedData.has(String(item.id)));
+            if (!pool.length) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'No data available',
+                    text: 'Nothing left to pick with the current filters.',
+                });
+                return;
+            }
+
+            const sampleSize = Math.min(desiredCount, pool.length);
+            const randomItems = pickRandomItems(pool, sampleSize);
+            randomItems.forEach(item => addSelectedRow(item, { silent: true }));
+            refreshSelectedTable();
+            updateSelectedCountBadge();
+            syncSelectedHeaderCheckbox();
+            unselectedTable.ajax.reload(null, false);
+
+            const shortageNote = pool.length < desiredCount ? ` Only ${pool.length} item${pool.length === 1 ? '' : 's'} matched.` : '';
+            Swal.fire({
+                icon: 'success',
+                title: 'Random selection applied',
+                text: `Added ${sampleSize} random row${sampleSize === 1 ? '' : 's'}.${shortageNote}`,
+                timer: 2000,
+                showConfirmButton: false
+            });
+        })
+        .fail(function() {
+            Swal.fire({
+                icon: 'error',
+                title: 'Random pick failed',
+                text: 'Unable to fetch data for random selection. Please try again.',
+            });
+        })
+        .always(function() {
+            setRandomSelectButtonLoading(false);
+        });
+    };
+
+    $randomSelectInput.on('keydown', function(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            $randomSelectButton.trigger('click');
+        }
+    });
+
+    $randomSelectButton.on('click', function() {
+        if ($randomSelectButton.prop('disabled')) {
+            return;
+        }
+
+        const desiredCount = parseInt($randomSelectInput.val(), 10);
+        if (!Number.isFinite(desiredCount) || desiredCount <= 0) {
+            Swal.fire({
+                icon: 'info',
+                title: 'Enter a number',
+                text: 'Please provide how many random rows you want to add.',
+            });
+            $randomSelectInput.focus();
+            return;
+        }
+
+        requestRandomSelection(desiredCount);
+    });
 
     const $unselectedTableEl = $('#unselectedDataTable');
     const $selectedTableEl = $('#selectedDataTable');
@@ -597,10 +754,6 @@ $(document).ready(function() {
                 previous: "&lsaquo;"
             }
         }
-    });
-
-    $unselectedTableEl.on('draw.dt', function() {
-        syncUnselectedHeaderCheckbox();
     });
 
     selectedTable = $selectedTableEl.DataTable({
@@ -769,7 +922,6 @@ $(document).ready(function() {
 
     updateSelectedCountBadge();
     syncSelectedHeaderCheckbox();
-    syncUnselectedHeaderCheckbox();
     updateDeselectionButton();
     updateUserAssignmentsButtonState();
 
@@ -777,9 +929,6 @@ $(document).ready(function() {
         const $checkbox = $(this);
         const dataId = $checkbox.val();
         const rowData = unselectedTable.row($checkbox.closest('tr')).data();
-
-        $selectAllCheckbox.prop('checked', false);
-
         if ($checkbox.is(':checked')) {
             addSelectedRow(rowData);
         } else {
@@ -793,32 +942,55 @@ $(document).ready(function() {
         const $checkbox = $(this);
         const dataId = $checkbox.val();
         if (!$checkbox.is(':checked')) {
-            $selectAllCheckbox.prop('checked', false);
             removeSelectedRow(dataId);
             unselectedTable.ajax.reload(null, false);
         }
     });
 
-    $unselectedHeaderCheckbox.on('change', function() {
-        const isChecked = $(this).is(':checked');
+    $selectCurrentPageButton.on('click', function() {
         const rows = unselectedTable.rows({ page: 'current' }).data().toArray();
         if (!rows.length) {
+            Swal.fire({
+                icon: 'info',
+                title: 'Nothing to select',
+                text: 'No rows are visible on this page.',
+                timer: 1500,
+                showConfirmButton: false
+            });
             return;
         }
 
+        let addedCount = 0;
         rows.forEach(row => {
-            const id = String(row.id);
-            if (isChecked) {
-                if (!selectedData.has(id)) {
-                    addSelectedRow(row);
-                }
-            } else if (selectedData.has(id)) {
-                removeSelectedRow(id);
+            if (row && row.id && !selectedData.has(String(row.id))) {
+                addSelectedRow(row, { silent: true });
+                addedCount += 1;
             }
         });
 
-        $selectAllCheckbox.prop('checked', false);
+        if (!addedCount) {
+            Swal.fire({
+                icon: 'info',
+                title: 'All set',
+                text: 'Every row on this page is already selected.',
+                timer: 1500,
+                showConfirmButton: false
+            });
+            return;
+        }
+
+        refreshSelectedTable();
+        updateSelectedCountBadge();
+        syncSelectedHeaderCheckbox();
         unselectedTable.ajax.reload(null, false);
+
+        Swal.fire({
+            icon: 'success',
+            title: 'Page selected',
+            text: `Added ${addedCount} row${addedCount === 1 ? '' : 's'} from the current page.`,
+            timer: 1500,
+            showConfirmButton: false
+        });
     });
 
     $selectedHeaderCheckbox.on('change', function() {
@@ -838,98 +1010,87 @@ $(document).ready(function() {
         rows.forEach(row => {
             removeSelectedRow(row.id);
         });
-        $selectAllCheckbox.prop('checked', false);
         unselectedTable.ajax.reload(null, false);
     });
 
     $onlyUnassignedCheckbox.on('change', function() {
-        $selectAllCheckbox.prop('checked', false);
-        $unselectedHeaderCheckbox.prop('checked', false);
         unselectedTable.ajax.reload();
     });
 
-    $selectAllCheckbox.on('change', function() {
-        const isChecked = $(this).is(':checked');
+    $selectAllFilteredButton.on('click', function() {
+        if ($selectAllFilteredButton.prop('disabled')) {
+            return;
+        }
 
-        if (isChecked) {
-            $.ajax({
-                url: "{{ route('data.allIds') }}",
-                type: 'POST',
-                data: {
-                    _token: token,
-                    search: unselectedTable.search(),
-                    only_unassigned: $onlyUnassignedCheckbox.is(':checked') ? 1 : 0,
-                    include_packages_count: 1,
-                },
-                success: function(response) {
-                    const previousSelectionIds = new Set(selectedData);
+        setSelectAllFilteredButtonLoading(true);
 
-                    selectedData.clear();
-                    selectedRowsMap.clear();
-
-                    let hasUnsavedInBulk = false;
-                    (response.data || []).forEach(item => {
-                        if (item && item.id) {
-                            const id = String(item.id);
-                            const isUnsaved = !lastSavedSelection.has(id);
-                            selectedData.add(id);
-                            selectedRowsMap.set(id, {
-                                id,
-                                content: formatContent(item.content ?? ''),
-                                packages_count: item.packages_count ?? 0,
-                                unsaved: isUnsaved,
-                            });
-                            if (isUnsaved) {
-                                hasUnsavedInBulk = true;
-                            }
-                        }
-                    });
-
-                    shouldFocusUnsavedRows = hasUnsavedInBulk;
-
-                    previousSelectionIds.forEach(id => {
-                        if (!selectedData.has(id) && lastSavedSelection.has(id)) {
-                            pendingDeselections.add(id);
-                        }
-                    });
-                    updateDeselectionButton();
-
-                    refreshSelectedTable();
-                    updateSelectedCountBadge();
-                    unselectedTable.ajax.reload();
-
-                    Swal.fire({
-                        icon: 'info',
-                        title: 'Selection updated',
-                        text: `Selected ${selectedData.size} rows`,
-                        timer: 1500,
-                        showConfirmButton: false
-                    });
-                },
-                error: function() {
-                    $selectAllCheckbox.prop('checked', false);
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Error',
-                        text: 'Unable to select all rows. Please try again.'
-                    });
+        $.ajax({
+            url: "{{ route('data.allIds') }}",
+            type: 'POST',
+            data: {
+                _token: token,
+                search: unselectedTable.search(),
+                only_unassigned: $onlyUnassignedCheckbox.is(':checked') ? 1 : 0,
+                include_packages_count: 1,
+            }
+        })
+        .done(function(response) {
+            const dataset = response.data || [];
+            if (!dataset.length) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Nothing to select',
+                    text: 'No rows match the current filters.',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+                return;
+            }
+            let addedCount = 0;
+            dataset.forEach(item => {
+                if (!item || !item.id) {
+                    return;
+                }
+                const wasAdded = addSelectedRow(item, { silent: true });
+                if (wasAdded) {
+                    addedCount += 1;
                 }
             });
-        } else {
-            const previousSelectionIds = Array.from(selectedData);
-            selectedData.clear();
-            selectedRowsMap.clear();
 
-            previousSelectionIds.forEach(id => {
-                if (lastSavedSelection.has(id)) {
-                    pendingDeselections.add(id);
-                }
-            });
-            updateDeselectionButton();
             refreshSelectedTable();
             updateSelectedCountBadge();
-            unselectedTable.ajax.reload();
-        }
+            syncSelectedHeaderCheckbox();
+            unselectedTable.ajax.reload(null, false);
+
+            if (!addedCount) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Already selected',
+                    text: 'All filtered rows are already in the selection.',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+                return;
+            }
+
+            Swal.fire({
+                icon: 'success',
+                title: 'Selection updated',
+                text: `Added ${addedCount} filtered row${addedCount === 1 ? '' : 's'}.`,
+                timer: 1500,
+                showConfirmButton: false
+            });
+        })
+        .fail(function() {
+            Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: 'Unable to select all rows. Please try again.'
+            });
+        })
+        .always(function() {
+            setSelectAllFilteredButtonLoading(false);
+        });
     });
 
     $('#saveAssignmentsButton').on('click', function() {
@@ -1170,6 +1331,46 @@ $(document).ready(function() {
             icon: 'success',
             title: 'Deselected',
             text: `Removed ${removedCount} filtered row${removedCount === 1 ? '' : 's'}.`,
+            timer: 1500,
+            showConfirmButton: false
+        });
+    });
+
+    $deselectAllSelectedButton.on('click', function() {
+        if (!$deselectAllSelectedButton.length) {
+            return;
+        }
+
+        if (!selectedData.size) {
+            Swal.fire({
+                icon: 'info',
+                title: 'No selections',
+                text: 'There are no rows to deselect.',
+                timer: 1500,
+                showConfirmButton: false
+            });
+            return;
+        }
+
+        const previousSelectionIds = Array.from(selectedData);
+        selectedData.clear();
+        selectedRowsMap.clear();
+
+        previousSelectionIds.forEach(id => {
+            if (lastSavedSelection.has(id)) {
+                pendingDeselections.add(id);
+            }
+        });
+        updateDeselectionButton();
+        refreshSelectedTable();
+        updateSelectedCountBadge();
+        syncSelectedHeaderCheckbox();
+        unselectedTable.ajax.reload();
+
+        Swal.fire({
+            icon: 'success',
+            title: 'Selections cleared',
+            text: `Removed ${previousSelectionIds.length} row${previousSelectionIds.length === 1 ? '' : 's'} from the selection.`,
             timer: 1500,
             showConfirmButton: false
         });
