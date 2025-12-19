@@ -21,10 +21,12 @@ class Annotation extends Model
         'user_id',
         'select_start',
         'select_end',
+        'annotated_at',
     ];
 
     protected $casts = [
         'category_ids' => 'array',
+        'annotated_at' => 'integer',
     ];
 
     protected $attributes = [
@@ -41,5 +43,10 @@ class Annotation extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function annotatedPackage(): BelongsTo
+    {
+        return $this->belongsTo(Package::class, 'annotated_at');
     }
 }

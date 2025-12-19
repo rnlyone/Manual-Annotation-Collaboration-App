@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Annotation;
 use App\Models\Category;
+use App\Models\OnAnnotation;
 use App\Models\SessionLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -135,6 +136,7 @@ class SessionLogController extends Controller
         }
 
         session()->forget(self::SESSION_KEY);
+        OnAnnotation::where('user_id', $user->id)->delete();
 
         return response()->json([
             'message' => 'Annotation session ended.',

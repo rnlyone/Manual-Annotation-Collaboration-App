@@ -175,10 +175,11 @@
 							<thead>
 								<tr>
 									<th style="width: 40px;"></th>
-									<th style="width: 60px;">Package</th>
+									<th style="width: 160px;">Assigned Packages</th>
+									<th style="width: 160px;">Annotated At (Package)</th>
 									<th style="width: 80px;">Annotator</th>
-									<th style="width: 60px;">Categories</th>
-									<th style="width: 100px;">Session</th>
+									<th style="width: 70px;">Categories</th>
+									<th style="width: 120px;">Session</th>
 									<th style="width: 400px;">Data</th>
 								</tr>
 							</thead>
@@ -219,6 +220,33 @@
 			return `<div class="data-snippet collapsed" data-raw-text="${encodedRaw}" data-expanded="false" title="Click to expand or collapse">${escapeHtml(preview)}</div>`;
 		};
 
+		const buildPackageBadges = (packages) => {
+			const items = Array.isArray(packages) ? packages : [];
+			if (!items.length) {
+				return '<span class="badge bg-label-secondary">Unassigned</span>';
+			}
+
+			return items
+				.map(name => `<span class="badge bg-label-primary me-1 mb-1">${escapeHtml(name)}</span>`)
+				.join('');
+		};
+
+		const buildAnnotatedPackageCell = (row) => {
+			const name = row?.annotated_package_name;
+			const timeline = row?.annotated_timestamp_human || row?.annotated_timestamp;
+			if (!name && !timeline) {
+				return '<span class="text-muted">—</span>';
+			}
+
+			let html = '<div class="d-flex flex-column">';
+			html += `<span class="fw-semibold">${escapeHtml(name || '—')}</span>`;
+			if (timeline) {
+				html += `<small class="text-muted">${escapeHtml(timeline)}</small>`;
+			}
+			html += '</div>';
+			return html;
+		};
+
 		const toggleSnippet = ($snippet) => {
 			const rawAttr = $snippet.attr('data-raw-text') || '';
 			let rawText = '';
@@ -252,7 +280,7 @@
 					params.user_id = $('#userFilter').val();
 				}
 			},
-			order: [[4, 'desc']],
+			order: [[2, 'desc']],
 			columns: [
 				{
 					data: 'id',
@@ -262,10 +290,23 @@
 						return `<input type="checkbox" class="form-check-input row-checkbox" value="${data}">`;
 					}
 				},
-				{ data: 'package' },
+				{
+					data: 'assigned_packages',
+					orderable: false,
+					render: function (data) {
+						return buildPackageBadges(data);
+					}
+				},
+				{
+					data: 'annotated_package_name',
+					render: function (_data, _type, row) {
+						return buildAnnotatedPackageCell(row);
+					}
+				},
 				{ data: 'annotator' },
 				{
 					data: 'categories',
+					orderable: false,
 					render: function (data) {
 						if (!data || !data.length) {
 							return '<span class="badge bg-label-secondary">No categories</span>';

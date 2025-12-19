@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Annotation;
 use App\Models\Category;
+use App\Models\OnAnnotation;
 use App\Models\Package;
 use App\Models\PackageData;
 use App\Models\SessionLog;
@@ -108,8 +109,16 @@ class AnnotationController extends Controller
         $this->ensurePackageAccess($package, $user->id);
 
         $categories = Category::orderBy('name')->get(['id', 'name']);
-        $initialItem = $this->getInitialWorkItem($package, $user->id);
         $sessionLog = $this->startAnnotationSession($package, $user->id);
+
+        $reservedItem = $this->getReservedWorkItem($package, $user->id);
+        $initialItem = $reservedItem ?: $this->getInitialWorkItem($package, $user->id);
+
+        if ($initialItem && isset($initialItem['data_id'])) {
+            $this->reserveWorkItem($user->id, $package, $initialItem['data_id']);
+        } else {
+            $this->releaseReservedWorkItem($user->id);
+        }
 
         return view('_app.app', [
             'content' => 'annotation.annotate',
@@ -252,12 +261,11 @@ class AnnotationController extends Controller
 
     public function managementTable(Request $request): JsonResponse
     {
-        $columns = [
-            0 => 'annotations.id',
-            1 => 'annotations.data_id',
-            2 => 'packages.name',
+        $orderableColumns = [
+            2 => 'annotations.updated_at',
             3 => 'users.name',
-            4 => 'annotations.updated_at',
+            5 => 'annotations.updated_at',
+            6 => 'data.content',
         ];
 
         $scope = $request->input('scope', 'all');
@@ -267,14 +275,13 @@ class AnnotationController extends Controller
 
         $baseQuery = $this->buildManagementQuery();
 
-        $session = null;
         if ($scope === 'package' && $packageId) {
             $baseQuery->where('package_data.package_id', $packageId);
         }
 
         if ($scope === 'session') {
-            $session = SessionLog::with('package')->find($sessionId);
-            if (! $session) {
+            $sessionAnnotationIds = $this->resolveSessionAnnotationIds($sessionId);
+            if ($sessionAnnotationIds->isEmpty()) {
                 return response()->json([
                     'draw' => (int) $request->input('draw'),
                     'recordsTotal' => 0,
@@ -283,21 +290,7 @@ class AnnotationController extends Controller
                 ]);
             }
 
-            $annotationIds = collect($session->annotation_datas ?? [])
-                ->map(fn ($id) => (int) $id)
-                ->filter(fn ($id) => $id > 0)
-                ->values();
-
-            if ($annotationIds->isEmpty()) {
-                return response()->json([
-                    'draw' => (int) $request->input('draw'),
-                    'recordsTotal' => 0,
-                    'recordsFiltered' => 0,
-                    'data' => [],
-                ]);
-            }
-
-            $baseQuery->whereIn('annotations.id', $annotationIds);
+            $baseQuery->whereIn('annotations.id', $sessionAnnotationIds);
         }
 
         if ($userId) {
@@ -305,7 +298,7 @@ class AnnotationController extends Controller
         }
 
         $countQuery = (clone $baseQuery)->cloneWithout(['orders'])->cloneWithoutBindings(['order']);
-        $recordsTotal = $countQuery->count('annotations.id');
+        $recordsTotal = (clone $countQuery)->select('annotations.id')->distinct()->count('annotations.id');
 
         $filteredQuery = clone $baseQuery;
         $searchValue = $request->input('search.value');
@@ -314,12 +307,13 @@ class AnnotationController extends Controller
                 $query->where('annotations.data_id', 'like', "%{$searchValue}%")
                     ->orWhere('packages.name', 'like', "%{$searchValue}%")
                     ->orWhere('users.name', 'like', "%{$searchValue}%")
-                    ->orWhere('data.content', 'like', "%{$searchValue}%");
+                    ->orWhere('data.content', 'like', "%{$searchValue}%")
+                    ->orWhere('annotated_packages.name', 'like', "%{$searchValue}%");
             });
         }
 
         $filteredCountQuery = (clone $filteredQuery)->cloneWithout(['orders'])->cloneWithoutBindings(['order']);
-        $recordsFiltered = $filteredCountQuery->count('annotations.id');
+        $recordsFiltered = (clone $filteredCountQuery)->select('annotations.id')->distinct()->count('annotations.id');
 
         $start = max((int) $request->input('start', 0), 0);
         $length = (int) $request->input('length', 25);
@@ -328,8 +322,8 @@ class AnnotationController extends Controller
         }
         $length = min($length, 500);
 
-        $orderColumnIndex = (int) $request->input('order.0.column', 4);
-        $orderColumn = $columns[$orderColumnIndex] ?? 'annotations.updated_at';
+        $orderColumnIndex = (int) $request->input('order.0.column', 2);
+        $orderColumn = $orderableColumns[$orderColumnIndex] ?? 'annotations.updated_at';
         $orderDirection = $request->input('order.0.dir', 'desc') === 'asc' ? 'asc' : 'desc';
 
         $rows = $filteredQuery
@@ -338,7 +332,17 @@ class AnnotationController extends Controller
             ->take($length)
             ->get();
 
-        $annotationIds = $rows->pluck('id')->map(fn ($id) => (int) $id)->filter()->values();
+        if ($rows->isEmpty()) {
+            return response()->json([
+                'draw' => (int) $request->input('draw'),
+                'recordsTotal' => $recordsTotal,
+                'recordsFiltered' => $recordsFiltered,
+                'data' => [],
+            ]);
+        }
+
+        $groupedRows = $rows->groupBy('id');
+        $annotationIds = $groupedRows->keys()->map(fn ($id) => (int) $id)->values();
         $sessionLabels = $this->sessionLabelsForAnnotations($annotationIds);
 
         $categoryIdsInResult = $rows->pluck('category_ids')
@@ -353,7 +357,8 @@ class AnnotationController extends Controller
             ? Category::whereIn('id', $categoryIdsInResult)->pluck('name', 'id')->map(fn ($name) => (string) $name)->all()
             : [];
 
-        $data = $rows->map(function ($row) use ($sessionLabels, $categoryLookup) {
+        $data = $groupedRows->map(function ($group) use ($sessionLabels, $categoryLookup) {
+            $row = $group->first();
             $content = $row->data_content ?? '';
             $categories = collect($this->normalizeCategoryIds($row->category_ids ?? []))
                 ->map(function ($id) {
@@ -364,19 +369,34 @@ class AnnotationController extends Controller
                 ->values()
                 ->all();
 
+            $assignedPackages = $group->pluck('package_name')
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+
+            $assignedPackageIds = $group->pluck('package_id')
+                ->filter()
+                ->unique()
+                ->map(fn ($id) => (int) $id)
+                ->values()
+                ->all();
+
             return [
                 'id' => (int) $row->id,
-                'package' => $row->package_name ?? '—',
-                'package_id' => $row->package_id,
+                'assigned_packages' => $assignedPackages,
+                'assigned_package_ids' => $assignedPackageIds,
                 'annotator' => $row->user_name ?? '—',
                 'annotator_id' => $row->user_id,
-                'annotated_at' => optional($row->annotated_at)->format('Y-m-d H:i:s') ?? '—',
-                'annotated_at_human' => optional($row->annotated_at)->diffForHumans() ?? '—',
+                'annotated_package_id' => $row->annotated_at ? (int) $row->annotated_at : null,
+                'annotated_package_name' => $row->annotated_package_name,
+                'annotated_timestamp' => optional($row->updated_at)->format('Y-m-d H:i:s') ?? null,
+                'annotated_timestamp_human' => optional($row->updated_at)->diffForHumans() ?? null,
                 'session' => $sessionLabels[$row->id] ?? null,
                 'categories' => $categories,
                 'content' => $content,
             ];
-        });
+        })->values();
 
         return response()->json([
             'draw' => (int) $request->input('draw'),
@@ -400,16 +420,7 @@ class AnnotationController extends Controller
         }
 
         if ($scope === 'session') {
-            $session = SessionLog::find($sessionId);
-            if (! $session) {
-                return response()->json(['count' => 0, 'ids' => []]);
-            }
-
-            $sessionAnnotationIds = collect($session->annotation_datas ?? [])
-                ->map(fn ($id) => (int) $id)
-                ->filter(fn ($id) => $id > 0)
-                ->values();
-
+            $sessionAnnotationIds = $this->resolveSessionAnnotationIds($sessionId);
             if ($sessionAnnotationIds->isEmpty()) {
                 return response()->json(['count' => 0, 'ids' => []]);
             }
@@ -421,7 +432,7 @@ class AnnotationController extends Controller
             $query->where('annotations.user_id', $userId);
         }
 
-        $rows = $query->get(['annotations.id', 'annotations.category_ids']);
+        $rows = $query->get(['annotations.id', 'annotations.category_ids'])->unique('id');
 
         $ids = $rows
             ->filter(function ($row) {
@@ -589,6 +600,12 @@ class AnnotationController extends Controller
 
         $item = $this->resolveWorkItem($package, $user->id, $cursorId, $direction);
 
+        if ($item && isset($item['data_id'])) {
+            $this->reserveWorkItem($user->id, $package, (string) $item['data_id']);
+        } else {
+            $this->releaseReservedWorkItem($user->id);
+        }
+
         return response()->json([
             'data' => $item,
         ]);
@@ -606,6 +623,12 @@ class AnnotationController extends Controller
             'category_ids.*' => 'integer|exists:categories,id',
         ]);
 
+        if (! $this->isDataReservedByUser($user->id, $package->id, $validated['data_id'])) {
+            return response()->json([
+                'message' => 'This data is no longer reserved for your session. Please reload to continue annotating.',
+            ], 409);
+        }
+
         $categoryIds = collect($validated['category_ids'] ?? [])
             ->filter(fn ($id) => $id !== null)
             ->map(fn ($id) => (int) $id)
@@ -621,6 +644,7 @@ class AnnotationController extends Controller
         $annotation->category_ids = $categoryIds;
         $annotation->select_start = $annotation->select_start ?? 0;
         $annotation->select_end = $annotation->select_end ?? 0;
+        $annotation->annotated_at = $package->id;
         $annotation->save();
 
         $this->recordAnnotationInSession($annotation->id, $user->id);
@@ -639,17 +663,37 @@ class AnnotationController extends Controller
                 'annotations.id',
                 'annotations.data_id',
                 'annotations.category_ids',
-                'annotations.updated_at as annotated_at',
+                'annotations.updated_at',
+                'annotations.annotated_at',
                 'annotations.user_id',
                 'users.name as user_name',
                 'package_data.package_id',
                 'packages.name as package_name',
+                'annotated_packages.name as annotated_package_name',
                 'data.content as data_content',
             ])
             ->leftJoin('users', 'users.id', '=', 'annotations.user_id')
             ->leftJoin('package_data', 'package_data.data_id', '=', 'annotations.data_id')
             ->leftJoin('packages', 'packages.id', '=', 'package_data.package_id')
+            ->leftJoin('packages as annotated_packages', 'annotated_packages.id', '=', 'annotations.annotated_at')
             ->leftJoin('data', 'data.id', '=', 'annotations.data_id');
+    }
+
+    private function resolveSessionAnnotationIds(?int $sessionId): Collection
+    {
+        if (! $sessionId) {
+            return collect();
+        }
+
+        $session = SessionLog::find($sessionId);
+        if (! $session) {
+            return collect();
+        }
+
+        return collect($session->annotation_datas ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->values();
     }
 
     private function sessionLabelsForAnnotations(Collection $annotationIds): array
@@ -742,6 +786,11 @@ class AnnotationController extends Controller
                 $query->select(DB::raw(1))
                     ->from('annotations')
                     ->whereColumn('annotations.data_id', 'package_data.data_id');
+            })
+            ->whereNotExists(function ($query) {
+                $query->select(DB::raw(1))
+                    ->from('on_annotations')
+                    ->whereColumn('on_annotations.data_id', 'package_data.data_id');
             });
     }
 
@@ -793,6 +842,64 @@ class AnnotationController extends Controller
         $record = $query->first();
 
         return $record ? $this->formatWorkItem($record, $userId) : null;
+    }
+
+    private function getReservedWorkItem(Package $package, int $userId): ?array
+    {
+        $reservation = OnAnnotation::where('user_id', $userId)
+            ->where('package_id', $package->id)
+            ->first();
+
+        if (! $reservation) {
+            return null;
+        }
+
+        $alreadyAnnotated = Annotation::where('data_id', $reservation->data_id)->exists();
+        if ($alreadyAnnotated) {
+            $reservation->delete();
+            return null;
+        }
+
+        $record = $this->packageDataQuery($package)
+            ->where('package_data.data_id', $reservation->data_id)
+            ->first();
+
+        if (! $record) {
+            $reservation->delete();
+            return null;
+        }
+
+        return $this->formatWorkItem($record, $userId);
+    }
+
+    private function reserveWorkItem(int $userId, Package $package, string $dataId): void
+    {
+        OnAnnotation::updateOrCreate(
+            ['user_id' => $userId],
+            [
+                'package_id' => $package->id,
+                'data_id' => $dataId,
+                'locked_at' => now(),
+            ]
+        );
+    }
+
+    private function releaseReservedWorkItem(int $userId): void
+    {
+        OnAnnotation::where('user_id', $userId)->delete();
+    }
+
+    private function isDataReservedByUser(int $userId, int $packageId, string $dataId): bool
+    {
+        $reservation = OnAnnotation::where('user_id', $userId)
+            ->where('package_id', $packageId)
+            ->first();
+
+        if (! $reservation) {
+            return false;
+        }
+
+        return (string) $reservation->data_id === (string) $dataId;
     }
 
     private function startAnnotationSession(Package $package, int $userId): SessionLog
