@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\Notification;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
@@ -23,9 +24,12 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         View::composer('_app.topnav', function ($view) {
+            $serverTime = Carbon::now(config('app.timezone'));
+
             if (! Auth::check()) {
                 $view->with('topnavNotifications', collect());
                 $view->with('topnavUnreadCount', 0);
+                $view->with('topnavServerTime', $serverTime);
 
                 return;
             }
@@ -45,6 +49,7 @@ class AppServiceProvider extends ServiceProvider
 
             $view->with('topnavNotifications', $notifications);
             $view->with('topnavUnreadCount', $unreadCount);
+            $view->with('topnavServerTime', $serverTime);
         });
     }
 }

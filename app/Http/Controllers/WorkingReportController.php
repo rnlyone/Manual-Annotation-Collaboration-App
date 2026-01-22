@@ -149,9 +149,9 @@ class WorkingReportController extends Controller
                 $durations = $records->map(fn (SessionLog $log) => $this->durationMinutes($log));
                 $annotationCounts = $records->map(fn (SessionLog $log) => $this->annotationCount($log));
                 $startHours = $records->map(fn (SessionLog $log) => optional($log->created_at)->hour ?? 0);
-                $hourCount = $startHours->countBy()->mapWithKeys(fn ($count, $hour) => [(int) $hour => (int) $count])->all();
-                $histogram = $this->normalizeHourHistogram($hourCount);
-                $peakHour = $this->extractPeakHour($histogram);
+                $hourHistogram = $this->buildHourlyMinutes($records);
+                $roundedHistogram = array_map(fn ($minutes) => round($minutes, 1), $hourHistogram);
+                $peakHour = $this->extractPeakHour($hourHistogram);
 
                 $user = $records->first()->user;
 
@@ -167,7 +167,7 @@ class WorkingReportController extends Controller
                     'median_duration_minutes' => $this->median($durations),
                     'avg_start_hour' => round($startHours->avg() ?? 0, 1),
                     'peak_start_hour' => $peakHour,
-                    'hour_histogram' => $histogram,
+                    'hour_histogram' => $roundedHistogram,
                 ];
             })
             ->sortByDesc('total_sessions')
@@ -226,21 +226,14 @@ class WorkingReportController extends Controller
 
     protected function buildHourlyDistribution(Collection $sessions): array
     {
-        $hours = array_fill(0, 24, 0);
-
-        foreach ($sessions as $log) {
-            $hour = optional($log->created_at)->hour;
-            if ($hour === null) {
-                continue;
-            }
-            $hours[$hour]++;
-        }
-
-        $peakHour = $this->extractPeakHour($hours);
+        $minutesHistogram = $this->buildHourlyMinutes($sessions);
+        $roundedMinutes = array_map(fn ($minutes) => round($minutes, 1), $minutesHistogram);
+        $peakHour = $this->extractPeakHour($minutesHistogram);
 
         return [
             'labels' => array_map(fn ($hour) => sprintf('%02d:00', $hour), range(0, 23)),
-            'counts' => array_values($hours),
+            'minutes' => $roundedMinutes,
+            'counts' => $roundedMinutes,
             'peak_hour' => $peakHour,
         ];
     }
@@ -330,25 +323,60 @@ class WorkingReportController extends Controller
         return 0;
     }
 
-    protected function normalizeHourHistogram(array $histogram): array
+    protected function buildHourlyMinutes(Collection $sessions): array
     {
-        $normalized = array_fill(0, 24, 0);
+        $histogram = array_fill(0, 24, 0.0);
 
-        foreach ($histogram as $hour => $count) {
-            if (! is_numeric($hour)) {
+        foreach ($sessions as $log) {
+            $window = $this->sessionWindow($log);
+
+            if (! $window) {
                 continue;
             }
 
-            $index = (int) $hour;
-
-            if ($index < 0 || $index > 23) {
-                continue;
-            }
-
-            $normalized[$index] = (int) $count;
+            [$start, $end] = $window;
+            $histogram = $this->addDurationToHistogram($histogram, $start, $end);
         }
 
-        return $normalized;
+        return $histogram;
+    }
+
+    protected function addDurationToHistogram(array $histogram, Carbon $start, Carbon $end): array
+    {
+        $cursor = $start->copy();
+
+        while ($cursor->lt($end)) {
+            $hourIndex = $cursor->hour;
+            $hourBoundary = $cursor->copy()->startOfHour()->addHour();
+            $segmentEnd = $end->lt($hourBoundary) ? $end->copy() : $hourBoundary;
+            $minutes = ($segmentEnd->getTimestamp() - $cursor->getTimestamp()) / 60;
+
+            if ($minutes <= 0) {
+                $minutes = 1 / 60;
+            }
+
+            $histogram[$hourIndex] += $minutes;
+            $cursor = $segmentEnd;
+        }
+
+        return $histogram;
+    }
+
+    protected function sessionWindow(SessionLog $log): ?array
+    {
+        $start = $log->created_at instanceof Carbon
+            ? $log->created_at->copy()
+            : ($log->created_at ? Carbon::parse($log->created_at) : null);
+
+        $end = $log->ended_at instanceof Carbon
+            ? $log->ended_at->copy()
+            : ($log->ended_at ? Carbon::parse($log->ended_at) : null);
+
+        if (! $start || ! $end || $end->lte($start)) {
+            return null;
+        }
+
+        return [$start, $end];
     }
 
     protected function extractPeakHour(array $histogram): ?int

@@ -279,7 +279,7 @@
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <div>
                         <h6 class="mb-0">Working-hour fingerprint</h6>
-                        <small class="text-muted">Overlay an annotator to compare.</small>
+                        <small class="text-muted">Track focused minutes per hour and overlay an annotator to compare.</small>
                     </div>
                     <select class="form-select form-select-sm w-auto" id="habitUserSelect">
                         <option value="">All annotators</option>
@@ -290,7 +290,7 @@
                 </div>
                 <div class="card-body">
                     <canvas id="hourlyChart" height="260"></canvas>
-                    @if(empty($hourly['counts']))
+                    @if(empty($hourly['minutes']))
                         <p class="text-muted text-center mt-3 mb-0">Hour-by-hour data unavailable for this range.</p>
                     @endif
                 </div>
@@ -587,10 +587,11 @@
                 state.charts.hourly.destroy();
             }
 
+            const baseMinutes = (payload.hourly && (payload.hourly.minutes || payload.hourly.counts)) || [];
             const datasets = [
                 {
-                    label: 'All annotators',
-                    data: payload.hourly.counts || [],
+                    label: 'Minutes active',
+                    data: baseMinutes,
                     backgroundColor: 'rgba(99,102,241,0.6)',
                     borderColor: '#6366f1',
                     fill: true,
@@ -619,10 +620,21 @@
                 options: {
                     maintainAspectRatio: false,
                     scales: {
-                        y: { beginAtZero: true }
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Minutes' }
+                        }
                     },
                     plugins: {
-                        legend: { display: true }
+                        legend: { display: true },
+                        tooltip: {
+                            callbacks: {
+                                label: (context) => {
+                                    const value = context.parsed.y ?? 0;
+                                    return `${context.dataset.label}: ${formatNumber(value, 1)} min`;
+                                }
+                            }
+                        }
                     }
                 }
             });

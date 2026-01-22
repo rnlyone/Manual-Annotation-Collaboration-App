@@ -22,9 +22,28 @@
                 'package_user_unassigned' => ['icon' => 'ti ti-user-minus', 'bg' => 'bg-label-danger'],
                 'annotation_requeue' => ['icon' => 'ti ti-refresh', 'bg' => 'bg-label-info'],
             ];
+            $serverTime = $topnavServerTime ?? now();
         @endphp
 
         <ul class="navbar-nav flex-row align-items-center ms-auto">
+
+            <!-- Server Clock -->
+            <li class="nav-item d-flex align-items-center me-3">
+                <span class="btn btn-text-secondary btn-icon rounded-pill me-2">
+                    <i class="ti ti-clock-hour-4 ti-md"></i>
+                </span>
+                <div class="lh-1">
+                    <div class="fw-semibold" id="serverClockTime"
+                        data-server-clock="{{ optional($serverTime)->toIso8601String() }}"
+                        data-server-tz="{{ $serverTime?->getTimezone()?->getName() }}"
+                        data-server-tz-abbr="{{ optional($serverTime)->format('T') }}">
+                        {{ optional($serverTime)->format('H:i:s') }}
+                    </div>
+                    <small class="text-muted text-uppercase" id="serverClockDate">
+                        {{ optional($serverTime)->format('D, M j') }} · {{ optional($serverTime)->format('T') }}
+                    </small>
+                </div>
+            </li>
 
             <!-- Style Switcher -->
             <li class="nav-item dropdown-style-switcher dropdown">
@@ -177,3 +196,52 @@
 
 
 </nav>
+
+@once
+    @push('scripts')
+        <script>
+            (function () {
+                const timeEl = document.getElementById('serverClockTime');
+                if (!timeEl || !timeEl.dataset.serverClock) {
+                    return;
+                }
+
+                const dateEl = document.getElementById('serverClockDate');
+                const tz = timeEl.dataset.serverTz || 'UTC';
+                const tzAbbr = timeEl.dataset.serverTzAbbr || '';
+                const serverTimestamp = Date.parse(timeEl.dataset.serverClock);
+
+                if (Number.isNaN(serverTimestamp)) {
+                    return;
+                }
+
+                const drift = serverTimestamp - Date.now();
+                const timeFormatter = new Intl.DateTimeFormat(undefined, {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false,
+                    timeZone: tz,
+                });
+                const dateFormatter = new Intl.DateTimeFormat(undefined, {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                    timeZone: tz,
+                });
+
+                const render = () => {
+                    const current = new Date(Date.now() + drift);
+                    timeEl.textContent = timeFormatter.format(current);
+                    if (dateEl) {
+                        const dateLabel = dateFormatter.format(current);
+                        dateEl.textContent = tzAbbr ? `${dateLabel} · ${tzAbbr}` : dateLabel;
+                    }
+                };
+
+                render();
+                setInterval(render, 1000);
+            })();
+        </script>
+    @endpush
+@endonce
