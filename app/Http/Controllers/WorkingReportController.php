@@ -290,20 +290,22 @@ class WorkingReportController extends Controller
         ]));
     }
 
-    protected function durationMinutes(SessionLog $log): int
+    protected function durationMinutes(SessionLog $log): float
     {
-        $start = $log->created_at instanceof Carbon ? $log->created_at : Carbon::parse($log->created_at);
-        $end = $log->ended_at instanceof Carbon ? $log->ended_at : ($log->ended_at ? Carbon::parse($log->ended_at) : null);
+        $window = $this->sessionWindow($log);
 
-        if (! $end) {
-            $end = $log->updated_at instanceof Carbon ? $log->updated_at : Carbon::parse($log->updated_at ?? $log->created_at);
+        if (! $window) {
+            return 0.0;
         }
 
-        if (! $start || ! $end) {
-            return 0;
+        [$start, $end] = $window;
+        $seconds = max(0, $end->diffInSeconds($start));
+
+        if ($seconds === 0) {
+            return 0.0;
         }
 
-        return max(1, $end->diffInMinutes($start));
+        return round($seconds / 60, 1);
     }
 
     protected function annotationCount(SessionLog $log): int
