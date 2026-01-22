@@ -43,7 +43,7 @@ class SessionLog extends Model
         }
 
         [$start, $end] = $window;
-        $seconds = max(0, $end->diffInSeconds($start));
+        $seconds = $end->diffInSeconds($start, true);
 
         return $seconds === 0 ? 0.0 : round($seconds / 60, 1);
     }
