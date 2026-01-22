@@ -111,7 +111,7 @@ class WorkingReportController extends Controller
             ->get();
 
         $totalSessions = $sessions->count();
-        $durations = $sessions->map(fn (SessionLog $log) => $this->durationMinutes($log));
+        $durations = $sessions->map(fn (SessionLog $log) => $log->duration_minutes);
         $annotationTotals = $sessions->map(fn (SessionLog $log) => $this->annotationCount($log));
 
         $perUser = $this->buildPerUserStats($sessions);
@@ -153,7 +153,7 @@ class WorkingReportController extends Controller
         return $sessions
             ->groupBy('user_id')
             ->map(function (Collection $records) {
-                $durations = $records->map(fn (SessionLog $log) => $this->durationMinutes($log));
+                $durations = $records->map(fn (SessionLog $log) => $log->duration_minutes);
                 $annotationCounts = $records->map(fn (SessionLog $log) => $this->annotationCount($log));
                 $startHours = $records->map(fn (SessionLog $log) => optional($log->created_at)->hour ?? 0);
                 $hourHistogram = $this->buildHourlyMinutes($records);
@@ -187,7 +187,7 @@ class WorkingReportController extends Controller
         return $sessions
             ->groupBy('package_id')
             ->map(function (Collection $records) {
-                $durations = $records->map(fn (SessionLog $log) => $this->durationMinutes($log));
+                $durations = $records->map(fn (SessionLog $log) => $log->duration_minutes);
                 $annotationCounts = $records->map(fn (SessionLog $log) => $this->annotationCount($log));
                 $package = $records->first()->package;
 
@@ -260,7 +260,7 @@ class WorkingReportController extends Controller
             ->sortByDesc('created_at')
             ->take(12)
             ->map(function (SessionLog $log) {
-                $duration = $this->durationMinutes($log);
+                $duration = $log->duration_minutes;
 
                 return [
                     'id' => $log->id,
@@ -306,24 +306,6 @@ class WorkingReportController extends Controller
         ]));
     }
 
-    protected function durationMinutes(SessionLog $log): float
-    {
-        $window = $this->sessionWindow($log);
-
-        if (! $window) {
-            return 0.0;
-        }
-
-        [$start, $end] = $window;
-        $seconds = max(0, $end->diffInSeconds($start));
-
-        if ($seconds === 0) {
-            return 0.0;
-        }
-
-        return round($seconds / 60, 1);
-    }
-
     protected function annotationCount(SessionLog $log): int
     {
         $data = $log->annotation_datas;
@@ -346,7 +328,7 @@ class WorkingReportController extends Controller
         $histogram = array_fill(0, 24, 0.0);
 
         foreach ($sessions as $log) {
-            $window = $this->sessionWindow($log);
+            $window = $log->sessionWindow();
 
             if (! $window) {
                 continue;
@@ -378,23 +360,6 @@ class WorkingReportController extends Controller
         }
 
         return $histogram;
-    }
-
-    protected function sessionWindow(SessionLog $log): ?array
-    {
-        $start = $log->created_at instanceof Carbon
-            ? $log->created_at->copy()
-            : ($log->created_at ? Carbon::parse($log->created_at) : null);
-
-        $end = $log->ended_at instanceof Carbon
-            ? $log->ended_at->copy()
-            : ($log->ended_at ? Carbon::parse($log->ended_at) : null);
-
-        if (! $start || ! $end || $end->lte($start)) {
-            return null;
-        }
-
-        return [$start, $end];
     }
 
     protected function reportTimezoneMeta(): array
