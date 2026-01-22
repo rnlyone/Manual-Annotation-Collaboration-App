@@ -31,6 +31,7 @@ Route::middleware('auth')->group(function () {
         Route::get('annotations/manage/table', [\App\Http\Controllers\AnnotationController::class, 'managementTable'])->name('annotations.manage.table');
         Route::get('annotations/manage/no-category-ids', [\App\Http\Controllers\AnnotationController::class, 'noCategoryAnnotationIds'])->name('annotations.manage.noCategoryIds');
         Route::post('annotations/manage/requeue', [\App\Http\Controllers\AnnotationController::class, 'requeue'])->name('annotations.manage.requeue');
+        Route::get('reports/working-sessions', [\App\Http\Controllers\WorkingReportController::class, 'index'])->name('reports.working');
 
         Route::resource('data', \App\Http\Controllers\DataController::class);
         Route::resource('users', \App\Http\Controllers\UserController::class);

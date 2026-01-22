@@ -60,6 +60,12 @@
         {{-- admin only --}}
         @if (auth()->user()->role == 'admin')
         <!-- User Management -->
+        <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'reports.working' ? 'active' : ''}}">
+            <a href="{{ route('reports.working') }}" class="menu-link">
+                <i class="menu-icon tf-icons ti ti-chart-infographic"></i>
+                <div data-i18n="Working Report">Working Report</div>
+            </a>
+        </li>
                 <!-- Settings -->
         <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['packages', 'categories', 'data', 'users', 'annotations.manage']) ? 'active open' : ''}}">
             <a href="javascript:void(0);" class="menu-link menu-toggle">
