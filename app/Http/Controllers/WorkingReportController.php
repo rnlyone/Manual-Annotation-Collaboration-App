@@ -11,6 +11,8 @@ use Illuminate\Support\Collection;
 
 class WorkingReportController extends Controller
 {
+    protected string $displayTimezone = 'Asia/Singapore';
+
     public function index(Request $request)
     {
         $validated = $request->validate([
@@ -122,6 +124,8 @@ class WorkingReportController extends Controller
         $summary = [
             'range_days' => $filters['start_date']->diffInDays($filters['end_date']) + 1,
             'range_label' => sprintf('%s to %s', $filters['start_date']->toFormattedDateString(), $filters['end_date']->toFormattedDateString()),
+            'range_start_iso' => $filters['start_date']->toIso8601String(),
+            'range_end_iso' => $filters['end_date']->toIso8601String(),
             'total_sessions' => $totalSessions,
             'total_annotations' => $annotationTotals->sum(),
             'active_annotators' => $sessions->pluck('user_id')->unique()->count(),
@@ -131,6 +135,8 @@ class WorkingReportController extends Controller
             'insights' => $habitInsights,
         ];
 
+        $timezone = $this->reportTimezoneMeta();
+
         return [
             'summary' => $summary,
             'per_user' => $perUser,
@@ -138,6 +144,7 @@ class WorkingReportController extends Controller
             'timeline' => $timeline,
             'hourly' => $hourly,
             'recent_sessions' => $recentSessions,
+            'timezone' => $timezone,
         ];
     }
 
@@ -208,9 +215,17 @@ class WorkingReportController extends Controller
         $sessionCounts = [];
         $annotationCounts = [];
         $uniqueUserCounts = [];
+        $isoLabels = [];
 
         foreach ($grouped as $date => $records) {
             $labels[] = $date;
+            if ($date !== 'Unknown') {
+                $isoLabels[] = Carbon::createFromFormat('Y-m-d', $date, config('app.timezone'))
+                    ->startOfDay()
+                    ->toIso8601String();
+            } else {
+                $isoLabels[] = null;
+            }
             $sessionCounts[] = $records->count();
             $annotationCounts[] = $records->sum(fn (SessionLog $log) => $this->annotationCount($log));
             $uniqueUserCounts[] = $records->pluck('user_id')->unique()->count();
@@ -218,6 +233,7 @@ class WorkingReportController extends Controller
 
         return [
             'labels' => $labels,
+            'label_iso' => $isoLabels,
             'session_counts' => $sessionCounts,
             'annotation_totals' => $annotationCounts,
             'unique_users' => $uniqueUserCounts,
@@ -379,6 +395,34 @@ class WorkingReportController extends Controller
         }
 
         return [$start, $end];
+    }
+
+    protected function reportTimezoneMeta(): array
+    {
+        $serverTimezone = config('app.timezone', 'UTC');
+        $targetTimezone = $this->displayTimezone;
+
+        $now = Carbon::now();
+        $serverOffset = $now->copy()->setTimezone($serverTimezone)->offsetMinutes;
+        $targetOffset = $now->copy()->setTimezone($targetTimezone)->offsetMinutes;
+        $offsetMinutes = $targetOffset - $serverOffset;
+
+        return [
+            'server' => $serverTimezone,
+            'target' => $targetTimezone,
+            'target_label' => $this->formatUtcOffsetLabel($targetOffset),
+            'offset_minutes' => $offsetMinutes,
+        ];
+    }
+
+    protected function formatUtcOffsetLabel(int $offsetMinutes): string
+    {
+        $sign = $offsetMinutes >= 0 ? '+' : '-';
+        $absolute = abs($offsetMinutes);
+        $hours = intdiv($absolute, 60);
+        $minutes = $absolute % 60;
+
+        return sprintf('UTC%s%02d%s', $sign, $hours, $minutes ? ':' . str_pad((string) $minutes, 2, '0', STR_PAD_LEFT) : '');
     }
 
     protected function extractPeakHour(array $histogram): ?int

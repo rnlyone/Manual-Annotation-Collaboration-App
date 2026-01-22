@@ -417,7 +417,8 @@
                 timeline: null,
                 userMetric: null,
                 hourly: null,
-            }
+            },
+            timezone: null,
         };
 
         const ChartLib = window.Chart;
@@ -437,6 +438,180 @@
             rangeLabel: document.getElementById('rangeLabel')
         };
 
+        state.timezone = applyTimezoneTransforms(state.payload);
+
+        function deriveTimezoneDisplay(payload) {
+            const timezone = payload && payload.timezone ? payload.timezone : {};
+            const offsetRaw = Object.prototype.hasOwnProperty.call(timezone, 'offset_minutes')
+                ? timezone.offset_minutes
+                : 0;
+            const offsetMinutes = Number(offsetRaw);
+
+            return {
+                target: timezone.target || 'Asia/Singapore',
+                label: timezone.target_label || 'UTC+08',
+                offsetMinutes,
+            };
+        }
+
+        function applyTimezoneTransforms(payload) {
+            if (!payload) {
+                return deriveTimezoneDisplay({});
+            }
+
+            const timezoneDisplay = deriveTimezoneDisplay(payload);
+            applyTimelineDisplay(payload, timezoneDisplay);
+            applyHourlyDisplay(payload, timezoneDisplay);
+            applySummaryDisplay(payload, timezoneDisplay);
+            applyPerUserDisplay(payload, timezoneDisplay);
+
+            return timezoneDisplay;
+        }
+
+        function applyTimelineDisplay(payload, timezoneDisplay) {
+            if (!payload.timeline) {
+                return;
+            }
+
+            const isoLabels = payload.timeline.label_iso || [];
+            if (isoLabels.length) {
+                payload.timeline.display_labels = isoLabels.map((iso, index) => {
+                    const fallbackLabels = Array.isArray(payload.timeline.labels) ? payload.timeline.labels : [];
+                    const fallbackLabel = fallbackLabels[index];
+                    return formatDateInTimezone(iso, timezoneDisplay.target, { month: 'short', day: 'numeric' })
+                        || fallbackLabel
+                        || iso;
+                });
+            } else if (Array.isArray(payload.timeline.labels)) {
+                payload.timeline.display_labels = payload.timeline.labels.slice();
+            }
+        }
+
+        function applyHourlyDisplay(payload, timezoneDisplay) {
+            if (!payload.hourly) {
+                return;
+            }
+
+            const hourOffset = getHourOffset(timezoneDisplay.offsetMinutes);
+            const baseMinutes = payload.hourly.minutes || payload.hourly.counts || [];
+            payload.hourly.display_minutes = rotateHistogram(baseMinutes, hourOffset);
+            payload.hourly.display_labels = buildHourLabels();
+            payload.hourly.display_peak_hour = shiftHour(payload.hourly.peak_hour, timezoneDisplay.offsetMinutes);
+        }
+
+        function applySummaryDisplay(payload, timezoneDisplay) {
+            if (!payload.summary) {
+                return;
+            }
+
+            const summary = payload.summary;
+            if (summary.range_start_iso && summary.range_end_iso) {
+                summary.display_range_label = formatRangeLabel(summary.range_start_iso, summary.range_end_iso, timezoneDisplay);
+            }
+            summary.display_peak_hour = shiftHour(summary.peak_hour, timezoneDisplay.offsetMinutes);
+        }
+
+        function applyPerUserDisplay(payload, timezoneDisplay) {
+            const hourOffset = getHourOffset(timezoneDisplay.offsetMinutes);
+            (payload.per_user || []).forEach((user) => {
+                user.display_peak_hour = shiftHour(user.peak_start_hour, timezoneDisplay.offsetMinutes);
+                user.display_histogram = rotateHistogram(user.hour_histogram || [], hourOffset);
+            });
+        }
+
+        function rotateHistogram(values, offsetHours) {
+            if (!Array.isArray(values) || values.length === 0) {
+                return [];
+            }
+
+            if (!Number.isInteger(offsetHours) || offsetHours % values.length === 0) {
+                return values.slice();
+            }
+
+            const size = values.length;
+            const normalized = ((offsetHours % size) + size) % size;
+            const result = new Array(size);
+
+            for (let i = 0; i < size; i++) {
+                const sourceIndex = (i - normalized + size) % size;
+                result[i] = values[sourceIndex];
+            }
+
+            return result;
+        }
+
+        function shiftHour(hour, offsetMinutes) {
+            if (hour === null || hour === undefined) {
+                return null;
+            }
+
+            if (!Number.isFinite(offsetMinutes) || offsetMinutes % 60 !== 0) {
+                return ((hour % 24) + 24) % 24;
+            }
+
+            const offsetHours = offsetMinutes / 60;
+            const shifted = (hour + offsetHours) % 24;
+            return shifted < 0 ? shifted + 24 : shifted;
+        }
+
+        function getHourOffset(offsetMinutes) {
+            if (!Number.isFinite(offsetMinutes) || offsetMinutes % 60 !== 0) {
+                return 0;
+            }
+            return offsetMinutes / 60;
+        }
+
+        function formatDateInTimezone(isoString, timeZone, options = { dateStyle: 'medium' }) {
+            if (!isoString || !timeZone) {
+                return null;
+            }
+            const timestamp = Date.parse(isoString);
+            if (Number.isNaN(timestamp)) {
+                return null;
+            }
+            try {
+                const formatter = new Intl.DateTimeFormat(undefined, { timeZone, ...options });
+                return formatter.format(new Date(timestamp));
+            } catch (error) {
+                console.warn('Unable to format date in timezone', error);
+                return null;
+            }
+        }
+
+        function formatRangeLabel(startIso, endIso, timezoneDisplay) {
+            const startLabel = formatDateInTimezone(startIso, timezoneDisplay.target, { dateStyle: 'medium' });
+            const endLabel = formatDateInTimezone(endIso, timezoneDisplay.target, { dateStyle: 'medium' });
+
+            if (startLabel && endLabel) {
+                return `${startLabel} → ${endLabel} · ${timezoneDisplay.label}`;
+            }
+
+            return null;
+        }
+
+        function buildHourLabels() {
+            return Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
+        }
+
+        function getTimelineLabels(payload) {
+            if (!payload.timeline) {
+                return [];
+            }
+
+            return payload.timeline.display_labels || payload.timeline.labels || [];
+        }
+
+        function formatPeakHour(entity) {
+            if (!entity) {
+                return '—';
+            }
+            const hour = entity.display_peak_hour ?? entity.peak_start_hour ?? entity.peak_hour;
+            if (hour === null || hour === undefined) {
+                return '—';
+            }
+            return `${String(Math.floor(hour)).padStart(2, '0')}:00`;
+        }
+
         function formatNumber(value, digits = 0) {
             const number = Number(value ?? 0);
             return number.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -455,8 +630,10 @@
             summaryEls.annotations && (summaryEls.annotations.textContent = formatNumber(summary.total_annotations || 0));
             summaryEls.duration && (summaryEls.duration.textContent = `${formatNumber(summary.avg_session_duration || 0, 1)}m`);
             summaryEls.annotators && (summaryEls.annotators.textContent = formatNumber(summary.active_annotators || 0));
-            summaryEls.peak && (summaryEls.peak.textContent = summary.peak_hour !== null && summary.peak_hour !== undefined ? `${String(summary.peak_hour).padStart(2, '0')}:00` : '—');
-            summaryEls.rangeLabel && (summaryEls.rangeLabel.textContent = summary.range_label || '');
+            const peakHour = summary.display_peak_hour ?? summary.peak_hour;
+            summaryEls.peak && (summaryEls.peak.textContent = peakHour !== null && peakHour !== undefined ? `${String(peakHour).padStart(2, '0')}:00` : '—');
+            const rangeLabel = summary.display_range_label || summary.range_label || '';
+            summaryEls.rangeLabel && (summaryEls.rangeLabel.textContent = rangeLabel);
 
             const insightList = document.getElementById('insightList');
             if (insightList) {
@@ -487,7 +664,7 @@
             state.charts.timeline = new ChartLib(ctx, {
                 type: 'bar',
                 data: {
-                    labels: payload.timeline.labels || [],
+                    labels: getTimelineLabels(payload),
                     datasets: [
                         {
                             type: 'line',
@@ -587,10 +764,11 @@
                 state.charts.hourly.destroy();
             }
 
-            const baseMinutes = (payload.hourly && (payload.hourly.minutes || payload.hourly.counts)) || [];
+            const timezoneLabel = state.timezone && state.timezone.label ? state.timezone.label : 'UTC+08';
+            const baseMinutes = (payload.hourly && (payload.hourly.display_minutes || payload.hourly.minutes || payload.hourly.counts)) || [];
             const datasets = [
                 {
-                    label: 'Minutes active',
+                    label: `Minutes active (${timezoneLabel})`,
                     data: baseMinutes,
                     backgroundColor: 'rgba(99,102,241,0.6)',
                     borderColor: '#6366f1',
@@ -614,7 +792,7 @@
             state.charts.hourly = new ChartLib(ctx, {
                 type: 'line',
                 data: {
-                    labels: payload.hourly.labels || [],
+                    labels: (payload.hourly && (payload.hourly.display_labels || payload.hourly.labels)) || [],
                     datasets
                 },
                 options: {
@@ -622,7 +800,7 @@
                     scales: {
                         y: {
                             beginAtZero: true,
-                            title: { display: true, text: 'Minutes' }
+                            title: { display: true, text: `Minutes (${timezoneLabel})` }
                         }
                     },
                     plugins: {
@@ -653,7 +831,7 @@
                             <td>${formatNumber(user.total_sessions)}</td>
                             <td>${formatNumber(user.avg_annotations, 1)}</td>
                             <td>${formatNumber(user.avg_duration_minutes, 1)}m</td>
-                            <td>${user.peak_start_hour === null ? '—' : `${String(user.peak_start_hour).padStart(2, '0')}:00`}</td>
+                            <td>${formatPeakHour(user)}</td>
                         </tr>
                     `).join('');
                 } else {
@@ -719,12 +897,16 @@
             }
             const userId = Number(habitUserSelect.value);
             const target = (state.payload.per_user || []).find((user) => Number(user.user_id) === userId);
-            return target ? target.hour_histogram : null;
+            if (!target) {
+                return null;
+            }
+            return target.display_histogram || target.hour_histogram || null;
         }
 
         function wireGroupingToggle() {
             groupingButtons.forEach((button) => {
-                button.classList.toggle('active', button.dataset.grouping === (groupingInput?.value || 'user'));
+                const currentGrouping = groupingInput ? groupingInput.value : 'user';
+                button.classList.toggle('active', button.dataset.grouping === currentGrouping);
                 button.addEventListener('click', () => {
                     groupingButtons.forEach((btn) => btn.classList.remove('active'));
                     button.classList.add('active');
@@ -772,6 +954,7 @@
             fetchReport(formData)
                 .then((payload) => {
                     state.payload = payload;
+                    state.timezone = applyTimezoneTransforms(state.payload);
                     updateSummary(payload.summary || {});
                     refreshTables(payload);
                     createTimelineChart(payload);
