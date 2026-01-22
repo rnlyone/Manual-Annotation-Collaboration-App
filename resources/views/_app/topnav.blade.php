@@ -23,6 +23,9 @@
                 'annotation_requeue' => ['icon' => 'ti ti-refresh', 'bg' => 'bg-label-info'],
             ];
             $serverTime = $topnavServerTime ?? now();
+            $displayClockTz = 'Asia/Singapore';
+            $displayClockLabel = 'UTC+8';
+            $displayTime = $serverTime?->copy()->setTimezone($displayClockTz);
         @endphp
 
         <ul class="navbar-nav flex-row align-items-center ms-auto">
@@ -36,11 +39,13 @@
                     <div class="fw-semibold" id="serverClockTime"
                         data-server-clock="{{ optional($serverTime)->toIso8601String() }}"
                         data-server-tz="{{ $serverTime?->getTimezone()?->getName() }}"
-                        data-server-tz-abbr="{{ optional($serverTime)->format('T') }}">
-                        {{ optional($serverTime)->format('H:i:s') }}
+                        data-server-tz-abbr="{{ optional($serverTime)->format('T') }}"
+                        data-clock-target="{{ $displayClockTz }}"
+                        data-clock-label="{{ $displayClockLabel }}">
+                        {{ optional($displayTime)->format('H:i:s') }}
                     </div>
                     <small class="text-muted text-uppercase" id="serverClockDate">
-                        {{ optional($serverTime)->format('D, M j') }} · {{ optional($serverTime)->format('T') }}
+                        {{ optional($displayTime)->format('D, M j') }} · {{ $displayClockLabel }}
                     </small>
                 </div>
             </li>
@@ -207,8 +212,8 @@
                 }
 
                 const dateEl = document.getElementById('serverClockDate');
-                const tz = timeEl.dataset.serverTz || 'UTC';
-                const tzAbbr = timeEl.dataset.serverTzAbbr || '';
+                const tz = timeEl.dataset.clockTarget || 'Asia/Singapore';
+                const tzLabel = timeEl.dataset.clockLabel || 'UTC+8';
                 const serverTimestamp = Date.parse(timeEl.dataset.serverClock);
 
                 if (Number.isNaN(serverTimestamp)) {
@@ -235,7 +240,7 @@
                     timeEl.textContent = timeFormatter.format(current);
                     if (dateEl) {
                         const dateLabel = dateFormatter.format(current);
-                        dateEl.textContent = tzAbbr ? `${dateLabel} · ${tzAbbr}` : dateLabel;
+                        dateEl.textContent = tzLabel ? `${dateLabel} · ${tzLabel}` : dateLabel;
                     }
                 };
 
