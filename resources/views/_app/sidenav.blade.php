@@ -59,12 +59,24 @@
 
         {{-- admin only --}}
         @if (auth()->user()->role == 'admin')
-        <!-- User Management -->
-        <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'reports.working' ? 'active' : ''}}">
-            <a href="{{ route('reports.working') }}" class="menu-link">
+        <!-- Reports -->
+        <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['reports.working', 'reports.package-export']) ? 'active open' : ''}}">
+            <a href="javascript:void(0);" class="menu-link menu-toggle">
                 <i class="menu-icon tf-icons ti ti-chart-infographic"></i>
-                <div data-i18n="Working Report">Working Report</div>
+                <div data-i18n="Reports">Reports</div>
             </a>
+            <ul class="menu-sub">
+                <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'reports.working' ? 'active' : ''}}">
+                    <a href="{{ route('reports.working') }}" class="menu-link">
+                        <div data-i18n="Working Sessions">Working Sessions</div>
+                    </a>
+                </li>
+                <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'reports.package-export' ? 'active' : ''}}">
+                    <a href="{{ route('reports.package-export') }}" class="menu-link">
+                        <div data-i18n="Package Export">Package Export</div>
+                    </a>
+                </li>
+            </ul>
         </li>
                 <!-- Settings -->
         <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['packages', 'categories', 'data', 'users', 'annotations.manage']) ? 'active open' : ''}}">
