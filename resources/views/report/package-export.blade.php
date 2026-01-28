@@ -200,6 +200,7 @@
                                 <th style="width: 30px;"></th>
                                 <th>Package</th>
                                 <th class="text-end">Assigned rows</th>
+                                <th class="text-end">Annotated here</th>
                                 <th style="width: 220px;">Coverage</th>
                                 <th style="width: 200px;">Last annotation</th>
                             </tr>
@@ -220,6 +221,7 @@
                                         <div class="package-meta">ID: {{ $package['id'] }} · {{ number_format($package['annotated_rows']) }} annotated</div>
                                     </td>
                                     <td class="text-end">{{ number_format($package['total_rows']) }}</td>
+                                    <td class="text-end fw-semibold text-primary">{{ number_format($package['annotated_at_rows'] ?? 0) }}</td>
                                     <td>
                                         <div class="d-flex justify-content-between align-items-center">
                                             <small>{{ number_format($package['coverage'], 1) }}%</small>
@@ -243,7 +245,7 @@
                                 </tr>
                                 @if($package['annotated_rows'] > 0 && !empty($package['annotated_data']))
                                     <tr class="data-detail-row data-detail-{{ $package['id'] }}" style="display: none;">
-                                        <td colspan="6">
+                                        <td colspan="7">
                                             <div class="p-3">
                                                 <h6 class="mb-3 text-muted">Annotated data in this package ({{ count($package['annotated_data']) }} items)</h6>
                                                 <div class="row g-2">

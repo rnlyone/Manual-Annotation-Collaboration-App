@@ -125,6 +125,12 @@ class PackageExportController extends Controller
             ->get()
             ->keyBy('package_id');
 
+        $annotatedAtCounts = Annotation::query()
+            ->selectRaw('annotated_at as package_id, count(distinct data_id) as annotated_at_rows')
+            ->whereNotNull('annotated_at')
+            ->groupBy('annotated_at')
+            ->pluck('annotated_at_rows', 'package_id');
+
         $annotatedDataByPackage = PackageData::query()
             ->select(['package_data.package_id', 'package_data.data_id', 'data.content'])
             ->join('data', 'data.id', '=', 'package_data.data_id')
@@ -143,19 +149,21 @@ class PackageExportController extends Controller
             });
 
         return $packages
-            ->map(function (Package $package) use ($assignmentTotals, $annotationStats, $annotatedDataByPackage) {
+            ->map(function (Package $package) use ($assignmentTotals, $annotationStats, $annotatedAtCounts, $annotatedDataByPackage) {
                 $annotationRow = $annotationStats->get($package->id);
                 $annotatedRows = (int) ($annotationRow->annotated_rows ?? 0);
                 $lastAnnotationAt = $annotationRow?->last_annotation_at
                     ? Carbon::parse($annotationRow->last_annotation_at)
                     : null;
                 $totalRows = (int) ($assignmentTotals[$package->id] ?? 0);
+                $annotatedAtRows = (int) ($annotatedAtCounts[$package->id] ?? 0);
 
                 return [
                     'id' => $package->id,
                     'name' => $package->name,
                     'total_rows' => $totalRows,
                     'annotated_rows' => $annotatedRows,
+                    'annotated_at_rows' => $annotatedAtRows,
                     'coverage' => $totalRows > 0 ? round(($annotatedRows / $totalRows) * 100, 1) : 0.0,
                     'last_annotation_at' => $lastAnnotationAt,
                     'annotated_data' => $annotatedDataByPackage->get($package->id, collect())->all(),

@@ -11,8 +11,6 @@ use Illuminate\Support\Collection;
 
 class WorkingReportController extends Controller
 {
-    protected string $displayTimezone = 'Asia/Singapore';
-
     public function index(Request $request)
     {
         $validated = $request->validate([
@@ -111,7 +109,7 @@ class WorkingReportController extends Controller
             ->get();
 
         $totalSessions = $sessions->count();
-        $durations = $sessions->map(fn (SessionLog $log) => $log->duration_minutes);
+        $durations = $sessions->map(fn (SessionLog $log) => $this->durationMinutes($log));
         $annotationTotals = $sessions->map(fn (SessionLog $log) => $this->annotationCount($log));
 
         $perUser = $this->buildPerUserStats($sessions);
@@ -124,8 +122,6 @@ class WorkingReportController extends Controller
         $summary = [
             'range_days' => $filters['start_date']->diffInDays($filters['end_date']) + 1,
             'range_label' => sprintf('%s to %s', $filters['start_date']->toFormattedDateString(), $filters['end_date']->toFormattedDateString()),
-            'range_start_iso' => $filters['start_date']->toIso8601String(),
-            'range_end_iso' => $filters['end_date']->toIso8601String(),
             'total_sessions' => $totalSessions,
             'total_annotations' => $annotationTotals->sum(),
             'active_annotators' => $sessions->pluck('user_id')->unique()->count(),
@@ -135,8 +131,6 @@ class WorkingReportController extends Controller
             'insights' => $habitInsights,
         ];
 
-        $timezone = $this->reportTimezoneMeta();
-
         return [
             'summary' => $summary,
             'per_user' => $perUser,
@@ -144,7 +138,6 @@ class WorkingReportController extends Controller
             'timeline' => $timeline,
             'hourly' => $hourly,
             'recent_sessions' => $recentSessions,
-            'timezone' => $timezone,
         ];
     }
 
@@ -153,12 +146,12 @@ class WorkingReportController extends Controller
         return $sessions
             ->groupBy('user_id')
             ->map(function (Collection $records) {
-                $durations = $records->map(fn (SessionLog $log) => $log->duration_minutes);
+                $durations = $records->map(fn (SessionLog $log) => $this->durationMinutes($log));
                 $annotationCounts = $records->map(fn (SessionLog $log) => $this->annotationCount($log));
                 $startHours = $records->map(fn (SessionLog $log) => optional($log->created_at)->hour ?? 0);
-                $hourHistogram = $this->buildHourlyMinutes($records);
-                $roundedHistogram = array_map(fn ($minutes) => round($minutes, 1), $hourHistogram);
-                $peakHour = $this->extractPeakHour($hourHistogram);
+                $hourCount = $startHours->countBy()->mapWithKeys(fn ($count, $hour) => [(int) $hour => (int) $count])->all();
+                $histogram = $this->normalizeHourHistogram($hourCount);
+                $peakHour = $this->extractPeakHour($histogram);
 
                 $user = $records->first()->user;
 
@@ -174,7 +167,7 @@ class WorkingReportController extends Controller
                     'median_duration_minutes' => $this->median($durations),
                     'avg_start_hour' => round($startHours->avg() ?? 0, 1),
                     'peak_start_hour' => $peakHour,
-                    'hour_histogram' => $roundedHistogram,
+                    'hour_histogram' => $histogram,
                 ];
             })
             ->sortByDesc('total_sessions')
@@ -187,7 +180,7 @@ class WorkingReportController extends Controller
         return $sessions
             ->groupBy('package_id')
             ->map(function (Collection $records) {
-                $durations = $records->map(fn (SessionLog $log) => $log->duration_minutes);
+                $durations = $records->map(fn (SessionLog $log) => $this->durationMinutes($log));
                 $annotationCounts = $records->map(fn (SessionLog $log) => $this->annotationCount($log));
                 $package = $records->first()->package;
 
@@ -215,17 +208,9 @@ class WorkingReportController extends Controller
         $sessionCounts = [];
         $annotationCounts = [];
         $uniqueUserCounts = [];
-        $isoLabels = [];
 
         foreach ($grouped as $date => $records) {
             $labels[] = $date;
-            if ($date !== 'Unknown') {
-                $isoLabels[] = Carbon::createFromFormat('Y-m-d', $date, config('app.timezone'))
-                    ->startOfDay()
-                    ->toIso8601String();
-            } else {
-                $isoLabels[] = null;
-            }
             $sessionCounts[] = $records->count();
             $annotationCounts[] = $records->sum(fn (SessionLog $log) => $this->annotationCount($log));
             $uniqueUserCounts[] = $records->pluck('user_id')->unique()->count();
@@ -233,7 +218,6 @@ class WorkingReportController extends Controller
 
         return [
             'labels' => $labels,
-            'label_iso' => $isoLabels,
             'session_counts' => $sessionCounts,
             'annotation_totals' => $annotationCounts,
             'unique_users' => $uniqueUserCounts,
@@ -242,14 +226,21 @@ class WorkingReportController extends Controller
 
     protected function buildHourlyDistribution(Collection $sessions): array
     {
-        $minutesHistogram = $this->buildHourlyMinutes($sessions);
-        $roundedMinutes = array_map(fn ($minutes) => round($minutes, 1), $minutesHistogram);
-        $peakHour = $this->extractPeakHour($minutesHistogram);
+        $hours = array_fill(0, 24, 0);
+
+        foreach ($sessions as $log) {
+            $hour = optional($log->created_at)->hour;
+            if ($hour === null) {
+                continue;
+            }
+            $hours[$hour]++;
+        }
+
+        $peakHour = $this->extractPeakHour($hours);
 
         return [
             'labels' => array_map(fn ($hour) => sprintf('%02d:00', $hour), range(0, 23)),
-            'minutes' => $roundedMinutes,
-            'counts' => $roundedMinutes,
+            'counts' => array_values($hours),
             'peak_hour' => $peakHour,
         ];
     }
@@ -260,7 +251,7 @@ class WorkingReportController extends Controller
             ->sortByDesc('created_at')
             ->take(12)
             ->map(function (SessionLog $log) {
-                $duration = $log->duration_minutes;
+                $duration = $this->durationMinutes($log);
 
                 return [
                     'id' => $log->id,
@@ -306,6 +297,22 @@ class WorkingReportController extends Controller
         ]));
     }
 
+    protected function durationMinutes(SessionLog $log): int
+    {
+        $start = $log->created_at instanceof Carbon ? $log->created_at : Carbon::parse($log->created_at);
+        $end = $log->ended_at instanceof Carbon ? $log->ended_at : ($log->ended_at ? Carbon::parse($log->ended_at) : null);
+
+        if (! $end) {
+            $end = $log->updated_at instanceof Carbon ? $log->updated_at : Carbon::parse($log->updated_at ?? $log->created_at);
+        }
+
+        if (! $start || ! $end) {
+            return 0;
+        }
+
+        return max(1, $end->diffInMinutes($start));
+    }
+
     protected function annotationCount(SessionLog $log): int
     {
         $data = $log->annotation_datas;
@@ -323,71 +330,25 @@ class WorkingReportController extends Controller
         return 0;
     }
 
-    protected function buildHourlyMinutes(Collection $sessions): array
+    protected function normalizeHourHistogram(array $histogram): array
     {
-        $histogram = array_fill(0, 24, 0.0);
+        $normalized = array_fill(0, 24, 0);
 
-        foreach ($sessions as $log) {
-            $window = $log->sessionWindow();
-
-            if (! $window) {
+        foreach ($histogram as $hour => $count) {
+            if (! is_numeric($hour)) {
                 continue;
             }
 
-            [$start, $end] = $window;
-            $histogram = $this->addDurationToHistogram($histogram, $start, $end);
-        }
+            $index = (int) $hour;
 
-        return $histogram;
-    }
-
-    protected function addDurationToHistogram(array $histogram, Carbon $start, Carbon $end): array
-    {
-        $cursor = $start->copy();
-
-        while ($cursor->lt($end)) {
-            $hourIndex = $cursor->hour;
-            $hourBoundary = $cursor->copy()->startOfHour()->addHour();
-            $segmentEnd = $end->lt($hourBoundary) ? $end->copy() : $hourBoundary;
-            $minutes = ($segmentEnd->getTimestamp() - $cursor->getTimestamp()) / 60;
-
-            if ($minutes <= 0) {
-                $minutes = 1 / 60;
+            if ($index < 0 || $index > 23) {
+                continue;
             }
 
-            $histogram[$hourIndex] += $minutes;
-            $cursor = $segmentEnd;
+            $normalized[$index] = (int) $count;
         }
 
-        return $histogram;
-    }
-
-    protected function reportTimezoneMeta(): array
-    {
-        $serverTimezone = config('app.timezone', 'UTC');
-        $targetTimezone = $this->displayTimezone;
-
-        $now = Carbon::now();
-        $serverOffset = $now->copy()->setTimezone($serverTimezone)->offsetMinutes;
-        $targetOffset = $now->copy()->setTimezone($targetTimezone)->offsetMinutes;
-        $offsetMinutes = $targetOffset - $serverOffset;
-
-        return [
-            'server' => $serverTimezone,
-            'target' => $targetTimezone,
-            'target_label' => $this->formatUtcOffsetLabel($targetOffset),
-            'offset_minutes' => $offsetMinutes,
-        ];
-    }
-
-    protected function formatUtcOffsetLabel(int $offsetMinutes): string
-    {
-        $sign = $offsetMinutes >= 0 ? '+' : '-';
-        $absolute = abs($offsetMinutes);
-        $hours = intdiv($absolute, 60);
-        $minutes = $absolute % 60;
-
-        return sprintf('UTC%s%02d%s', $sign, $hours, $minutes ? ':' . str_pad((string) $minutes, 2, '0', STR_PAD_LEFT) : '');
+        return $normalized;
     }
 
     protected function extractPeakHour(array $histogram): ?int
