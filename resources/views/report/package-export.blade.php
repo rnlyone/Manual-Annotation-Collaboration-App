@@ -102,38 +102,8 @@
         font-size: 0.85rem;
         color: #6b7280;
     }
-    .data-detail-row {
-        background: #f9fafb;
-        border-top: 1px solid #e5e7eb;
-    }
-    .data-item {
-        padding: 0.5rem 0.75rem;
-        border-left: 3px solid #6366f1;
-        background: white;
-        border-radius: 0.4rem;
-        margin-bottom: 0.5rem;
-    }
-    .data-item:last-child {
-        margin-bottom: 0;
-    }
-    .data-id {
-        font-family: 'Courier New', monospace;
-        font-size: 0.85rem;
-        color: #6366f1;
-        font-weight: 600;
-    }
-    .data-content {
-        font-size: 0.9rem;
-        color: #374151;
-        margin-top: 0.25rem;
-    }
     .expand-toggle {
-        cursor: pointer;
-        user-select: none;
-        transition: transform 0.2s ease;
-    }
-    .expand-toggle.expanded {
-        transform: rotate(90deg);
+        display: none;
     }
 </style>
 
@@ -197,7 +167,6 @@
                         <thead>
                             <tr>
                                 <th style="width: 40px;"></th>
-                                <th style="width: 30px;"></th>
                                 <th>Package</th>
                                 <th class="text-end">Assigned rows</th>
                                 <th class="text-end">Annotated here</th>
@@ -210,11 +179,6 @@
                                 <tr class="package-row-{{ $package['id'] }}">
                                     <td>
                                         <input type="checkbox" class="form-check-input package-checkbox" name="package_ids[]" value="{{ $package['id'] }}" />
-                                    </td>
-                                    <td>
-                                        @if($package['annotated_rows'] > 0)
-                                            <i class="ti ti-chevron-right expand-toggle" data-package-id="{{ $package['id'] }}" title="Show annotated data"></i>
-                                        @endif
                                     </td>
                                     <td>
                                         <div class="package-name">{{ $package['name'] }}</div>
@@ -243,25 +207,6 @@
                                         @endif
                                     </td>
                                 </tr>
-                                @if($package['annotated_rows'] > 0 && !empty($package['annotated_data']))
-                                    <tr class="data-detail-row data-detail-{{ $package['id'] }}" style="display: none;">
-                                        <td colspan="7">
-                                            <div class="p-3">
-                                                <h6 class="mb-3 text-muted">Annotated data in this package ({{ count($package['annotated_data']) }} items)</h6>
-                                                <div class="row g-2">
-                                                    @foreach($package['annotated_data'] as $dataItem)
-                                                        <div class="col-12 col-md-6 col-lg-4">
-                                                            <div class="data-item">
-                                                                <div class="data-id">{{ $dataItem['data_id'] }}</div>
-                                                                <div class="data-content">{{ Str::limit($dataItem['content'], 80) }}</div>
-                                                            </div>
-                                                        </div>
-                                                    @endforeach
-                                                </div>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                @endif
                             @empty
                                 <tr>
                                     <td colspan="6" class="text-center text-muted py-4">No packages available for export.</td>
@@ -324,23 +269,5 @@
 
         refreshSelectionState();
 
-        // Expand/collapse annotated data details
-        const expandToggles = document.querySelectorAll('.expand-toggle');
-        expandToggles.forEach(toggle => {
-            toggle.addEventListener('click', function() {
-                const packageId = this.getAttribute('data-package-id');
-                const detailRow = document.querySelector('.data-detail-' + packageId);
-
-                if (detailRow) {
-                    if (detailRow.style.display === 'none') {
-                        detailRow.style.display = 'table-row';
-                        this.classList.add('expanded');
-                    } else {
-                        detailRow.style.display = 'none';
-                        this.classList.remove('expanded');
-                    }
-                }
-            });
-        });
     });
 </script>
