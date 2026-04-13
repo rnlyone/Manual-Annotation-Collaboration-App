@@ -125,17 +125,28 @@ class PackageExportController extends Controller
             return back()->withErrors(['package_ids' => 'No data rows found across any packages.']);
         }
 
-        $annotationBuckets = $this->buildAnnotationBuckets($dataRows->pluck('data_id')->unique());
+        $dataIds = $dataRows->pluck('data_id')->unique();
+
+        $packageBuckets = PackageData::query()
+            ->select(['package_data.data_id', 'packages.id as package_id', 'packages.name as package_name'])
+            ->join('packages', 'packages.id', '=', 'package_data.package_id')
+            ->whereIn('package_data.data_id', $dataIds)
+            ->get()
+            ->groupBy('data_id')
+            ->map(fn (Collection $rows) => $rows->pluck('package_name')->sort()->values());
+
+        $annotationBuckets = $this->buildAnnotationBuckets($dataIds);
         $categoryLookup = $this->resolveCategoryLookup($annotationBuckets);
 
         $timestamp = Carbon::now()->format('Ymd-His');
         $fileName = sprintf('all-packages-annotations-%s.csv', $timestamp);
 
-        return response()->streamDownload(function () use ($dataRows, $annotationBuckets, $categoryLookup): void {
+        return response()->streamDownload(function () use ($dataRows, $annotationBuckets, $categoryLookup, $packageBuckets): void {
             $handle = fopen('php://output', 'w');
 
             fputcsv($handle, [
                 'data_id',
+                'packages',
                 'annotation_labels',
                 'annotation_label_ids',
                 'content',
@@ -144,9 +155,11 @@ class PackageExportController extends Controller
             foreach ($dataRows as $row) {
                 $labelIds = $annotationBuckets->get($row->data_id, collect());
                 $labels = $labelIds->map(fn (int $id) => $categoryLookup[$id] ?? (string) $id);
+                $packageNames = $packageBuckets->get($row->data_id, collect());
 
                 fputcsv($handle, [
                     $row->data_id,
+                    $packageNames->implode('|'),
                     $labels->implode('|'),
                     $labelIds->implode('|'),
                     $row->content,
