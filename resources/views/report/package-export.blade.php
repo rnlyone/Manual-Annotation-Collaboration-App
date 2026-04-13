@@ -7,6 +7,8 @@
         'coverage' => 0,
     ];
     $exportEndpoint = $contentdata['exportEndpoint'] ?? '#';
+    $exportAllEndpoint = $contentdata['exportAllEndpoint'] ?? '#';
+    $uniqueDataCount = $contentdata['uniqueDataCount'] ?? 0;
 @endphp
 
 <style>
@@ -134,6 +136,25 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div class="card package-table-card mb-4">
+        <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div>
+                <h5 class="mb-1"><span class="ti ti-packages me-1"></span>Download all packages (deduplicated)</h5>
+                <small class="text-muted">
+                    Export every unique data row across all packages into a single CSV.
+                    Rows shared between packages appear only once.
+                    <strong>{{ number_format($uniqueDataCount) }}</strong> unique data rows total.
+                </small>
+            </div>
+            <form method="POST" action="{{ $exportAllEndpoint }}">
+                @csrf
+                <button type="submit" class="btn btn-primary">
+                    <span class="ti ti-download me-1"></span>Download all ({{ number_format($uniqueDataCount) }} rows)
+                </button>
+            </form>
         </div>
     </div>
 

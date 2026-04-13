@@ -18,6 +18,10 @@ class PackageExportController extends Controller
         $packages = $this->packageSummaries();
         $metrics = $this->buildMetricSnapshot($packages);
 
+        $uniqueDataCount = PackageData::query()
+            ->distinct('data_id')
+            ->count('data_id');
+
         return view('_app.app', [
             'content' => 'report.package-export',
             'headerdata' => [
@@ -28,6 +32,8 @@ class PackageExportController extends Controller
                 'packages' => $packages,
                 'metrics' => $metrics,
                 'exportEndpoint' => route('reports.package-export.download'),
+                'exportAllEndpoint' => route('reports.package-export.download-all'),
+                'uniqueDataCount' => $uniqueDataCount,
             ],
         ]);
     }
@@ -93,6 +99,53 @@ class PackageExportController extends Controller
                 fputcsv($handle, [
                     $row->package_id,
                     $packageNames[$row->package_id] ?? 'Unknown',
+                    $row->data_id,
+                    $labels->implode('|'),
+                    $labelIds->implode('|'),
+                    $row->content,
+                ]);
+            }
+
+            fclose($handle);
+        }, $fileName, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
+    }
+
+    public function exportAll()
+    {
+        $dataRows = PackageData::query()
+            ->select(['package_data.data_id', 'data.content'])
+            ->join('data', 'data.id', '=', 'package_data.data_id')
+            ->distinct()
+            ->orderBy('package_data.data_id')
+            ->get();
+
+        if ($dataRows->isEmpty()) {
+            return back()->withErrors(['package_ids' => 'No data rows found across any packages.']);
+        }
+
+        $annotationBuckets = $this->buildAnnotationBuckets($dataRows->pluck('data_id')->unique());
+        $categoryLookup = $this->resolveCategoryLookup($annotationBuckets);
+
+        $timestamp = Carbon::now()->format('Ymd-His');
+        $fileName = sprintf('all-packages-annotations-%s.csv', $timestamp);
+
+        return response()->streamDownload(function () use ($dataRows, $annotationBuckets, $categoryLookup): void {
+            $handle = fopen('php://output', 'w');
+
+            fputcsv($handle, [
+                'data_id',
+                'annotation_labels',
+                'annotation_label_ids',
+                'content',
+            ]);
+
+            foreach ($dataRows as $row) {
+                $labelIds = $annotationBuckets->get($row->data_id, collect());
+                $labels = $labelIds->map(fn (int $id) => $categoryLookup[$id] ?? (string) $id);
+
+                fputcsv($handle, [
                     $row->data_id,
                     $labels->implode('|'),
                     $labelIds->implode('|'),

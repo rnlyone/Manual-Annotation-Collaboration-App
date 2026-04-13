@@ -34,6 +34,7 @@ Route::middleware('auth')->group(function () {
         Route::get('reports/working-sessions', [\App\Http\Controllers\WorkingReportController::class, 'index'])->name('reports.working');
         Route::get('reports/package-annotation-export', [\App\Http\Controllers\PackageExportController::class, 'index'])->name('reports.package-export');
         Route::post('reports/package-annotation-export', [\App\Http\Controllers\PackageExportController::class, 'export'])->name('reports.package-export.download');
+        Route::post('reports/package-annotation-export/all', [\App\Http\Controllers\PackageExportController::class, 'exportAll'])->name('reports.package-export.download-all');
 
         Route::resource('data', \App\Http\Controllers\DataController::class);
         Route::resource('users', \App\Http\Controllers\UserController::class);
