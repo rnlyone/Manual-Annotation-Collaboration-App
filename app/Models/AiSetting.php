@@ -35,6 +35,7 @@ class AiSetting extends Model
     {
         return [
             self::PROVIDER_OPENAI => [
+                'gpt-4.1'        => 'GPT-4.1',
                 'gpt-4o-mini'    => 'GPT-4o Mini (fast, cheap — recommended)',
                 'gpt-4o'         => 'GPT-4o (best quality)',
                 'gpt-3.5-turbo'  => 'GPT-3.5 Turbo (legacy)',
