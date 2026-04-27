@@ -59,6 +59,13 @@
 
         {{-- admin only --}}
         @if (auth()->user()->role == 'admin')
+        <!-- Phase 2 — LLM Screening -->
+        <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'phase2' ? 'active' : ''}}">
+            <a href="{{ route('phase2.index') }}" class="menu-link">
+                <i class="menu-icon tf-icons ti ti-robot"></i>
+                <div data-i18n="Phase 2 Screening">Phase 2 Screening</div>
+            </a>
+        </li>
         <!-- Reports -->
         <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['reports.working', 'reports.package-export']) ? 'active open' : ''}}">
             <a href="javascript:void(0);" class="menu-link menu-toggle">
@@ -79,7 +86,7 @@
             </ul>
         </li>
                 <!-- Settings -->
-        <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['packages', 'categories', 'data', 'users', 'annotations.manage']) ? 'active open' : ''}}">
+        <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['packages', 'categories', 'data', 'users', 'annotations.manage', 'ai-settings']) ? 'active open' : ''}}">
             <a href="javascript:void(0);" class="menu-link menu-toggle">
                 <i class="menu-icon tf-icons ti ti-settings"></i>
                 <div data-i18n="Settings">Settings</div>
@@ -108,6 +115,11 @@
                 <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'users' ? 'active' : ''}}">
                     <a href="{{route('users.index')}}" class="menu-link">
                         <div data-i18n="User Management">User Management</div>
+                    </a>
+                </li>
+                <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'ai-settings' ? 'active' : ''}}">
+                    <a href="{{route('ai-settings.show')}}" class="menu-link">
+                        <div data-i18n="AI Agent Settings">AI Agent Settings</div>
                     </a>
                 </li>
             </ul>

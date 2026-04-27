@@ -17,7 +17,16 @@ class Package extends Model
      */
     protected $fillable = [
         'name',
+        'type',
     ];
+
+    /**
+     * Whether this is a Phase 3 re-annotation package.
+     */
+    public function isPhase3(): bool
+    {
+        return $this->type === 'phase3';
+    }
 
     /**
      * Data assignments linked to this package.

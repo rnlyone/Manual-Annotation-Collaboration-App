@@ -36,6 +36,18 @@ Route::middleware('auth')->group(function () {
         Route::post('reports/package-annotation-export', [\App\Http\Controllers\PackageExportController::class, 'export'])->name('reports.package-export.download');
         Route::post('reports/package-annotation-export/all', [\App\Http\Controllers\PackageExportController::class, 'exportAll'])->name('reports.package-export.download-all');
 
+        // AI Agent Settings
+        Route::get('ai-settings', [\App\Http\Controllers\AiSettingController::class, 'show'])->name('ai-settings.show');
+        Route::put('ai-settings', [\App\Http\Controllers\AiSettingController::class, 'update'])->name('ai-settings.update');
+
+        // Phase 2 — LLM Screening
+        Route::get('phase2', [\App\Http\Controllers\Phase2Controller::class, 'index'])->name('phase2.index');
+        Route::post('phase2', [\App\Http\Controllers\Phase2Controller::class, 'store'])->name('phase2.store');
+        Route::get('phase2/{run}', [\App\Http\Controllers\Phase2Controller::class, 'show'])->name('phase2.show');
+        Route::delete('phase2/{run}', [\App\Http\Controllers\Phase2Controller::class, 'cancel'])->name('phase2.cancel');
+        Route::post('phase2/{run}/create-phase3', [\App\Http\Controllers\Phase2Controller::class, 'createPhase3'])->name('phase2.createPhase3');
+        Route::post('phase2/{run}/retry-errors', [\App\Http\Controllers\Phase2Controller::class, 'retryErrors'])->name('phase2.retryErrors');
+
         Route::resource('data', \App\Http\Controllers\DataController::class);
         Route::resource('users', \App\Http\Controllers\UserController::class);
         Route::resource('categories', \App\Http\Controllers\CategoryController::class);

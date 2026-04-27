@@ -45,7 +45,14 @@
                                 @forelse(($assignedPackages ?? collect()) as $index => $package)
                                     <tr>
                                         <td>{{ $loop->iteration }}</td>
-                                        <td>{{ $package['name'] }}</td>
+                                        <td>
+                                            {{ $package['name'] }}
+                                            @if(($package['type'] ?? null) === 'phase3')
+                                                <span class="badge bg-label-success ms-1" style="font-size:0.7rem;">Phase 3</span>
+                                            @else
+                                                <span class="badge bg-label-secondary ms-1" style="font-size:0.7rem;">Phase 1</span>
+                                            @endif
+                                        </td>
                                         <td>{{ number_format($package['data_total']) }}</td>
                                         <td>{{ number_format($package['user_annotated']) }}</td>
                                         <td>{{ number_format(max($package['remaining'], 0)) }}</td>
