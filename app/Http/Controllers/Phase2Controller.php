@@ -97,7 +97,7 @@ class Phase2Controller extends Controller
         if ($settings->provider === AiSetting::PROVIDER_GROQ) {
             RunPhase2ScreeningGroq::dispatch($run->id);
         } elseif ($settings->use_batch_api) {
-            RunPhase2Screening::dispatch($run->id);
+            RunPhase2Screening::dispatchSync($run->id);
         } else {
             RunPhase2ScreeningSync::dispatch($run->id);
         }
@@ -299,7 +299,7 @@ class Phase2Controller extends Controller
         if ($settings->provider === AiSetting::PROVIDER_GROQ) {
             RunPhase2ScreeningGroq::dispatch($run->id);
         } elseif ($settings->use_batch_api) {
-            RunPhase2Screening::dispatch($run->id);
+            RunPhase2Screening::dispatchSync($run->id);
         } else {
             RunPhase2ScreeningSync::dispatch($run->id);
         }
