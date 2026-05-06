@@ -1,6 +1,5 @@
 @php
-    $runs       = $contentdata['runs'];
-    $packages   = $contentdata['packages'];
+    $runs = $contentdata['runs'];
 
     $statusColors = [
         'pending'   => 'secondary',
@@ -45,24 +44,10 @@
                     <p class="text-muted small mb-3">
                         Upload a CSV with columns: <code>id</code>, <code>llm_label</code>,
                         <code>llm_confidence</code>, <code>llm_reasoning</code>.
-                        Items not in the CSV are treated as non-Normal (skipped by LLM).
+                        The system automatically groups rows by package. One run is created per matched Phase 1 package.
                     </p>
                     <form action="{{ route('phase2.store') }}" method="POST" enctype="multipart/form-data">
                         @csrf
-                        <div class="mb-3">
-                            <label class="form-label" for="source_package_id">Phase 1 Package</label>
-                            <select class="form-select" id="source_package_id" name="source_package_id" required>
-                                <option value="">— Select a package —</option>
-                                @foreach($packages as $pkg)
-                                    <option value="{{ $pkg->id }}" {{ old('source_package_id') == $pkg->id ? 'selected' : '' }}>
-                                        {{ $pkg->name }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            @error('source_package_id')
-                                <div class="text-danger small mt-1">{{ $message }}</div>
-                            @enderror
-                        </div>
                         <div class="mb-3">
                             <label class="form-label" for="csv_file">CSV File</label>
                             <input type="file" class="form-control" id="csv_file" name="csv_file"
@@ -72,7 +57,7 @@
                             @enderror
                         </div>
                         <button type="submit" class="btn btn-primary w-100">
-                            <i class="ti ti-upload me-1"></i>Import & Create Run
+                            <i class="ti ti-upload me-1"></i>Import & Create Runs
                         </button>
                     </form>
                 </div>

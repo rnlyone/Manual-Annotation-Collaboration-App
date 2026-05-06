@@ -49,25 +49,18 @@ class Phase2Controller extends Controller
             'content'     => 'phase2.index',
             'headerdata'  => ['pagetitle' => 'Phase 2 — LLM Screening'],
             'sidenavdata' => ['active' => 'phase2'],
-            'contentdata' => compact('runs', 'packages'),
+            'contentdata' => compact('runs'),
         ]);
     }
 
     public function store(Request $request)
     {
         $request->validate([
-            'source_package_id' => 'required|integer|exists:packages,id',
-            'csv_file'          => 'required|file|mimes:csv,txt|max:20480',
+            'csv_file' => 'required|file|mimes:csv,txt|max:51200',
         ]);
 
-        $package = Package::findOrFail($request->input('source_package_id'));
-
-        if ($package->type === 'phase3') {
-            return back()->withErrors(['source_package_id' => 'Cannot run Phase 2 on a Phase 3 package.']);
-        }
-
         // Parse CSV
-        $path = $request->file('csv_file')->getRealPath();
+        $path   = $request->file('csv_file')->getRealPath();
         $handle = fopen($path, 'r');
         $header = array_map('strtolower', array_map('trim', fgetcsv($handle)));
 
@@ -75,7 +68,7 @@ class Phase2Controller extends Controller
         foreach ($required as $col) {
             if (! in_array($col, $header)) {
                 fclose($handle);
-                return back()->withErrors(['csv_file' => "CSV is missing required column: {$col}"]);  
+                return back()->withErrors(['csv_file' => "CSV is missing required column: {$col}"]);
             }
         }
 
@@ -89,8 +82,12 @@ class Phase2Controller extends Controller
             if (count($line) <= max($idIdx, $labelIdx, $confidenceIdx, $reasoningIdx)) {
                 continue;
             }
-            $rows[] = [
-                'data_id'    => trim($line[$idIdx]),
+            $dataId = trim($line[$idIdx]);
+            if ($dataId === '') {
+                continue;
+            }
+            $rows[$dataId] = [
+                'data_id'    => $dataId,
                 'llm_label'  => trim($line[$labelIdx]),
                 'confidence' => is_numeric(trim($line[$confidenceIdx])) ? (float) trim($line[$confidenceIdx]) : null,
                 'reasoning'  => trim($line[$reasoningIdx]) ?: null,
@@ -102,92 +99,102 @@ class Phase2Controller extends Controller
             return back()->withErrors(['csv_file' => 'CSV file contains no data rows.']);
         }
 
-        // Validate all data_ids exist in the source package
-        $packageDataIds = PackageData::where('package_id', $package->id)
-            ->pluck('data_id')
-            ->flip();
+        // Map each data_id to its Phase 1 package(s)
+        // A data_id can appear in multiple Phase 1 packages — we create one run per package
+        $dataIds = array_keys($rows);
+        $packageMap = PackageData::whereIn('data_id', $dataIds)
+            ->join('packages', 'packages.id', '=', 'package_data.package_id')
+            ->whereNull('packages.type')   // Phase 1 packages only
+            ->select('package_data.data_id', 'package_data.package_id')
+            ->get()
+            ->groupBy('package_id');
 
-        $invalidIds = array_filter(array_column($rows, 'data_id'), fn ($id) => ! $packageDataIds->has($id));
-        if (! empty($invalidIds)) {
-            $sample = implode(', ', array_slice($invalidIds, 0, 3));
-            return back()->withErrors(['csv_file' => "Some IDs in the CSV are not in the selected package: {$sample}" . (count($invalidIds) > 3 ? ' ...' : '')]);
+        if ($packageMap->isEmpty()) {
+            return back()->withErrors(['csv_file' => 'None of the IDs in the CSV match any Phase 1 package.']);
         }
 
-        // Determine QC sample (10% random of Normal-labeled items)
-        $normalIndices = array_keys(array_filter($rows, fn ($r) => strtolower($r['llm_label']) === 'normal'));
-        $qcCount       = max(1, (int) round(count($normalIndices) * 0.1));
-        $qcIndices     = array_flip((array) array_rand($normalIndices, min($qcCount, count($normalIndices))));
-        $qcActualIndices = [];
-        foreach (array_values($normalIndices) as $i => $rowIdx) {
-            if (isset($qcIndices[$i])) {
-                $qcActualIndices[$rowIdx] = true;
+        $createdRunIds = [];
+
+        DB::transaction(function () use ($rows, $packageMap, &$createdRunIds) {
+            $now = now();
+
+            foreach ($packageMap as $packageId => $packageRows) {
+                // Build the subset of CSV rows for this package
+                $packageDataIds = $packageRows->pluck('data_id')->flip();
+                $subset         = array_filter($rows, fn ($r) => $packageDataIds->has($r['data_id']));
+
+                // All items in this package (to compute non-normal count)
+                $allPackageDataIds = PackageData::where('package_id', $packageId)->pluck('data_id')->flip();
+                $csvIds            = array_flip(array_column($subset, 'data_id'));
+                $totalNonNormal    = $allPackageDataIds->filter(fn ($_, $id) => ! isset($csvIds[$id]))->count();
+
+                // QC sample: 10% random of Normal-labeled rows
+                $subsetValues  = array_values($subset);
+                $normalIndices = array_keys(array_filter($subsetValues, fn ($r) => strtolower($r['llm_label']) === 'normal'));
+                $qcActualIndices = [];
+                if (! empty($normalIndices)) {
+                    $qcCount   = max(1, (int) round(count($normalIndices) * 0.1));
+                    $picked    = (array) array_rand($normalIndices, min($qcCount, count($normalIndices)));
+                    $pickedSet = array_flip($picked);
+                    foreach (array_values($normalIndices) as $i => $rowIdx) {
+                        if (isset($pickedSet[$i])) {
+                            $qcActualIndices[$rowIdx] = true;
+                        }
+                    }
+                }
+
+                $run = Phase2Run::create([
+                    'source_package_id' => $packageId,
+                    'status'            => 'running',
+                    'started_at'        => $now,
+                ]);
+
+                $totalNormal   = 0;
+                $flaggedCount  = 0;
+                $qcSampleCount = 0;
+                $inserts       = [];
+
+                foreach ($subsetValues as $idx => $row) {
+                    $flagged    = strtolower($row['llm_label']) !== 'normal';
+                    $inQcSample = isset($qcActualIndices[$idx]);
+
+                    if (! $flagged) $totalNormal++;
+                    if ($flagged)   $flaggedCount++;
+                    if ($inQcSample) $qcSampleCount++;
+
+                    $inserts[] = [
+                        'phase2_run_id' => $run->id,
+                        'data_id'       => $row['data_id'],
+                        'llm_label'     => $row['llm_label'],
+                        'confidence'    => $row['confidence'],
+                        'reasoning'     => $row['reasoning'],
+                        'flagged'       => $flagged,
+                        'in_qc_sample'  => $inQcSample,
+                        'status'        => 'done',
+                        'created_at'    => $now,
+                        'updated_at'    => $now,
+                    ];
+                }
+
+                collect($inserts)->chunk(500)->each(fn ($chunk) => AiScreening::insert($chunk->all()));
+
+                $run->update([
+                    'status'           => 'completed',
+                    'total_normal'     => $totalNormal + $flaggedCount,
+                    'total_non_normal' => $totalNonNormal,
+                    'processed'        => count($subset),
+                    'flagged_count'    => $flaggedCount,
+                    'qc_sample_count'  => $qcSampleCount,
+                    'completed_at'     => $now,
+                ]);
+
+                $createdRunIds[] = $run->id;
             }
-        }
-
-        $runId = null;
-        DB::transaction(function () use ($package, $rows, $qcActualIndices, $packageDataIds, &$runId) {
-            $totalNormal    = 0;
-            $flaggedCount   = 0;
-            $qcSampleCount  = 0;
-            $now            = now();
-
-            $run = Phase2Run::create([
-                'source_package_id' => $package->id,
-                'status'            => 'running',
-                'started_at'        => $now,
-            ]);
-
-            // total_non_normal = items in package not in CSV
-            $csvIds = array_flip(array_column($rows, 'data_id'));
-            $totalNonNormal = $packageDataIds->filter(fn ($_, $id) => ! isset($csvIds[$id]))->count();
-
-            $inserts = [];
-            foreach ($rows as $idx => $row) {
-                $flagged     = strtolower($row['llm_label']) !== 'normal';
-                $inQcSample  = isset($qcActualIndices[$idx]);
-
-                if (! $flagged) {
-                    $totalNormal++;
-                }
-                if ($flagged) {
-                    $flaggedCount++;
-                }
-                if ($inQcSample) {
-                    $qcSampleCount++;
-                }
-
-                $inserts[] = [
-                    'phase2_run_id' => $run->id,
-                    'data_id'       => $row['data_id'],
-                    'llm_label'     => $row['llm_label'],
-                    'confidence'    => $row['confidence'],
-                    'reasoning'     => $row['reasoning'],
-                    'flagged'       => $flagged,
-                    'in_qc_sample'  => $inQcSample,
-                    'status'        => 'done',
-                    'created_at'    => $now,
-                    'updated_at'    => $now,
-                ];
-            }
-
-            collect($inserts)->chunk(500)->each(fn ($chunk) => AiScreening::insert($chunk->all()));
-
-            $run->update([
-                'status'          => 'completed',
-                'total_normal'    => $totalNormal + $flaggedCount, // all csv rows were originally Normal
-                'total_non_normal'=> $totalNonNormal,
-                'processed'       => count($rows),
-                'flagged_count'   => $flaggedCount,
-                'qc_sample_count' => $qcSampleCount,
-                'completed_at'    => now(),
-            ]);
-
-            $completedRun = $run;
-            $runId = $run->id;
         });
 
-        return redirect()->route('phase2.show', $runId)
-            ->with('success', 'CSV imported successfully. Run completed.');
+        $count = count($createdRunIds);
+        return redirect()->route('phase2.index')
+            ->with('success', "CSV imported. {$count} run(s) created (one per matched package).");
     }
 
     public function show(Phase2Run $run)
