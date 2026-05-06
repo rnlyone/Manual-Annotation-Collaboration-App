@@ -183,10 +183,18 @@
                                     @endif
                                 </td>
                                 <td class="text-muted small">{{ $run['started_at'] ?? '—' }}</td>
-                                <td>
+                                <td class="d-flex gap-1">
                                     <a href="{{ route('phase2.show', $run['id']) }}" class="btn btn-sm btn-outline-secondary">
                                         <i class="ti ti-eye"></i>
                                     </a>
+                                    <form action="{{ route('phase2.destroy', $run['id']) }}" method="POST"
+                                          onsubmit="return confirm('Delete Run #{{ $run['id'] }}? This cannot be undone.')">
+                                        @csrf
+                                        @method('DELETE')
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="ti ti-trash"></i>
+                                        </button>
+                                    </form>
                                 </td>
                             </tr>
                         @endforeach

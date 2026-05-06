@@ -197,6 +197,16 @@ class Phase2Controller extends Controller
             ->with('success', "CSV imported. {$count} run(s) created (one per matched package).");
     }
 
+    public function destroy(Phase2Run $run)
+    {
+        DB::transaction(function () use ($run) {
+            AiScreening::where('phase2_run_id', $run->id)->delete();
+            $run->delete();
+        });
+
+        return redirect()->route('phase2.index')->with('success', "Run #{$run->id} deleted.");
+    }
+
     public function show(Phase2Run $run)
     {
         $run->load(['sourcePackage:id,name', 'phase3Package:id,name']);

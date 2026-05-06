@@ -44,6 +44,7 @@ Route::middleware('auth')->group(function () {
         Route::get('phase2', [\App\Http\Controllers\Phase2Controller::class, 'index'])->name('phase2.index');
         Route::post('phase2', [\App\Http\Controllers\Phase2Controller::class, 'store'])->name('phase2.store');
         Route::get('phase2/{run}', [\App\Http\Controllers\Phase2Controller::class, 'show'])->name('phase2.show');
+        Route::delete('phase2/{run}', [\App\Http\Controllers\Phase2Controller::class, 'destroy'])->name('phase2.destroy');
         Route::post('phase2/{run}/create-phase3', [\App\Http\Controllers\Phase2Controller::class, 'createPhase3'])->name('phase2.createPhase3');
 
         Route::resource('data', \App\Http\Controllers\DataController::class);

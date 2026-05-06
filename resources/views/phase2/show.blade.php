@@ -66,6 +66,14 @@
                                     </button>
                                 </form>
                             @endif
+                            <form action="{{ route('phase2.destroy', $run->id) }}" method="POST"
+                                  onsubmit="return confirm('Delete Run #{{ $run->id }}? This cannot be undone.')">
+                                @csrf
+                                @method('DELETE')
+                                <button type="submit" class="btn btn-outline-danger">
+                                    <i class="ti ti-trash me-1"></i>Delete Run
+                                </button>
+                            </form>
                             <a href="{{ route('phase2.index') }}" class="btn btn-outline-secondary">
                                 <i class="ti ti-arrow-left me-1"></i>Back
                             </a>
