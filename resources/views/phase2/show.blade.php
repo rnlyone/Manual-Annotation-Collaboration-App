@@ -3,15 +3,12 @@
     $screenings = $contentdata['screenings'];
     $lcr        = $contentdata['lcr'];
     $fnr        = $contentdata['fnr'];
-    $errorCount = $contentdata['errorCount'] ?? 0;
 
     $statusColors = [
-        'pending'          => 'secondary',
-        'running'          => 'primary',
-        'batch_submitted'  => 'info',
-        'completed'        => 'success',
-        'failed'           => 'danger',
-        'cancelled'        => 'warning',
+        'pending'   => 'secondary',
+        'running'   => 'primary',
+        'completed' => 'success',
+        'failed'    => 'danger',
     ];
 @endphp
 
@@ -51,9 +48,6 @@
                                 <span class="badge bg-label-{{ $statusColors[$run->status] ?? 'secondary' }} ms-2">
                                     {{ ucfirst($run->status) }}
                                 </span>
-                                @if(in_array($run->status, ['running', 'batch_submitted']))
-                                    <span class="spinner-border spinner-border-sm text-primary ms-1"></span>
-                                @endif
                             </h4>
                             <div class="text-muted">
                                 Source package: <strong>{{ $run->sourcePackage?->name ?? '—' }}</strong>
@@ -69,16 +63,6 @@
                                     @csrf
                                     <button type="submit" class="btn btn-success">
                                         <i class="ti ti-package me-1"></i>Create Phase 3 Package
-                                    </button>
-                                </form>
-                            @endif
-                            @if(in_array($run->status, ['pending', 'running', 'batch_submitted']))
-                                <form action="{{ route('phase2.cancel', $run->id) }}" method="POST"
-                                      onsubmit="return confirm('Cancel this run?')">
-                                    @csrf
-                                    @method('DELETE')
-                                    <button type="submit" class="btn btn-outline-danger">
-                                        <i class="ti ti-x me-1"></i>Cancel
                                     </button>
                                 </form>
                             @endif
@@ -258,33 +242,12 @@
     @endif
 
     {{-- Screening Results Table --}}
-    @php
-        $missingCount  = max(0, $run->total_normal - $run->processed);
-        $totalToRetry  = $errorCount + $missingCount;
-        $canRetry      = $totalToRetry > 0 && in_array($run->status, ['completed', 'failed']);
-        $retryConfirm  = "Retry {$totalToRetry} item(s) ({$errorCount} errors, {$missingCount} missing)?";
-    @endphp
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
             <h5 class="mb-0">Screening Results</h5>
             <div class="d-flex gap-2 flex-wrap align-items-center">
                 <span class="badge bg-label-danger">🚩 Flagged = {{ number_format($run->flagged_count) }}</span>
                 <span class="badge bg-label-warning">QC = {{ number_format($run->qc_sample_count) }}</span>
-                @if($errorCount > 0)
-                    <span class="badge bg-label-danger">⚠ Errors = {{ $errorCount }}</span>
-                @endif
-                @if($missingCount > 0)
-                    <span class="badge bg-label-warning">⚠ Missing = {{ $missingCount }}</span>
-                @endif
-                @if($canRetry)
-                    <form action="{{ route('phase2.retryErrors', $run->id) }}" method="POST" class="d-inline">
-                        @csrf
-                        <button type="submit" class="btn btn-sm btn-outline-warning"
-                                onclick="return confirm('{{ $retryConfirm }}')">
-                            <i class="ti ti-refresh me-1"></i>Retry ({{ $totalToRetry }})
-                        </button>
-                    </form>
-                @endif
             </div>
         </div>
         <div class="card-body p-0">
@@ -295,8 +258,6 @@
                         Run is queued and will start shortly.
                     @elseif($run->status === 'running')
                         Screening in progress...
-                    @elseif($run->status === 'batch_submitted')
-                        Batch submitted to OpenAI. Results will appear automatically when processing completes (up to 24h).
                     @else
                         No screening results.
                     @endif
@@ -379,10 +340,3 @@
     </div>
 
 </div>
-
-@if(in_array($run->status, ['running', 'pending', 'batch_submitted']))
-<script>
-    // Auto-refresh every 8 seconds while running
-    setTimeout(() => window.location.reload(), 8000);
-</script>
-@endif

@@ -2,11 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\RunPhase2Screening;
-use App\Jobs\RunPhase2ScreeningGroq;
-use App\Jobs\RunPhase2ScreeningSync;
 use App\Models\AiScreening;
-use App\Models\AiSetting;
 use App\Models\Annotation;
 use App\Models\Package;
 use App\Models\PackageData;
@@ -15,7 +11,6 @@ use App\Models\UserPackage;
 use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 
 class Phase2Controller extends Controller
 {
@@ -50,60 +45,149 @@ class Phase2Controller extends Controller
             ->orderBy('name')
             ->get(['id', 'name']);
 
-        $hasApiKey = AiSetting::singleton()->hasOpenAiApiKey();
-
         return view('_app.app', [
             'content'     => 'phase2.index',
             'headerdata'  => ['pagetitle' => 'Phase 2 — LLM Screening'],
             'sidenavdata' => ['active' => 'phase2'],
-            'contentdata' => compact('runs', 'packages', 'hasApiKey'),
+            'contentdata' => compact('runs', 'packages'),
         ]);
     }
 
     public function store(Request $request)
     {
-        $validated = $request->validate([
+        $request->validate([
             'source_package_id' => 'required|integer|exists:packages,id',
+            'csv_file'          => 'required|file|mimes:csv,txt|max:20480',
         ]);
 
-        $package = Package::findOrFail($validated['source_package_id']);
+        $package = Package::findOrFail($request->input('source_package_id'));
 
         if ($package->type === 'phase3') {
             return back()->withErrors(['source_package_id' => 'Cannot run Phase 2 on a Phase 3 package.']);
         }
 
-        // Prevent duplicate active runs on the same package.
-        // batch_submitted runs are passive (waiting on OpenAI); only block a new
-        // batch run from being submitted alongside one — not a standard sync run.
-        $settings       = AiSetting::singleton();
-        $blockingStatuses = ['pending', 'running'];
-        if ($settings->use_batch_api) {
-            $blockingStatuses[] = 'batch_submitted';
+        // Parse CSV
+        $path = $request->file('csv_file')->getRealPath();
+        $handle = fopen($path, 'r');
+        $header = array_map('strtolower', array_map('trim', fgetcsv($handle)));
+
+        $required = ['id', 'llm_label', 'llm_confidence', 'llm_reasoning'];
+        foreach ($required as $col) {
+            if (! in_array($col, $header)) {
+                fclose($handle);
+                return back()->withErrors(['csv_file' => "CSV is missing required column: {$col}"]);  
+            }
         }
 
-        $alreadyRunning = Phase2Run::where('source_package_id', $package->id)
-            ->whereIn('status', $blockingStatuses)
-            ->exists();
+        $idIdx         = array_search('id', $header);
+        $labelIdx      = array_search('llm_label', $header);
+        $confidenceIdx = array_search('llm_confidence', $header);
+        $reasoningIdx  = array_search('llm_reasoning', $header);
 
-        if ($alreadyRunning) {
-            return back()->withErrors(['source_package_id' => 'A Phase 2 run for this package is already in progress.']);
+        $rows = [];
+        while (($line = fgetcsv($handle)) !== false) {
+            if (count($line) <= max($idIdx, $labelIdx, $confidenceIdx, $reasoningIdx)) {
+                continue;
+            }
+            $rows[] = [
+                'data_id'    => trim($line[$idIdx]),
+                'llm_label'  => trim($line[$labelIdx]),
+                'confidence' => is_numeric(trim($line[$confidenceIdx])) ? (float) trim($line[$confidenceIdx]) : null,
+                'reasoning'  => trim($line[$reasoningIdx]) ?: null,
+            ];
+        }
+        fclose($handle);
+
+        if (empty($rows)) {
+            return back()->withErrors(['csv_file' => 'CSV file contains no data rows.']);
         }
 
-        $run = Phase2Run::create([
-            'source_package_id' => $package->id,
-            'status'            => 'pending',
-        ]);
+        // Validate all data_ids exist in the source package
+        $packageDataIds = PackageData::where('package_id', $package->id)
+            ->pluck('data_id')
+            ->flip();
 
-        if ($settings->provider === AiSetting::PROVIDER_GROQ) {
-            RunPhase2ScreeningGroq::dispatch($run->id);
-        } elseif ($settings->use_batch_api) {
-            RunPhase2Screening::dispatchSync($run->id);
-        } else {
-            RunPhase2ScreeningSync::dispatch($run->id);
+        $invalidIds = array_filter(array_column($rows, 'data_id'), fn ($id) => ! $packageDataIds->has($id));
+        if (! empty($invalidIds)) {
+            $sample = implode(', ', array_slice($invalidIds, 0, 3));
+            return back()->withErrors(['csv_file' => "Some IDs in the CSV are not in the selected package: {$sample}" . (count($invalidIds) > 3 ? ' ...' : '')]);
         }
 
-        return redirect()->route('phase2.show', $run->id)
-            ->with('success', 'Phase 2 screening started. Refresh this page to check progress.');
+        // Determine QC sample (10% random of Normal-labeled items)
+        $normalIndices = array_keys(array_filter($rows, fn ($r) => strtolower($r['llm_label']) === 'normal'));
+        $qcCount       = max(1, (int) round(count($normalIndices) * 0.1));
+        $qcIndices     = array_flip((array) array_rand($normalIndices, min($qcCount, count($normalIndices))));
+        $qcActualIndices = [];
+        foreach (array_values($normalIndices) as $i => $rowIdx) {
+            if (isset($qcIndices[$i])) {
+                $qcActualIndices[$rowIdx] = true;
+            }
+        }
+
+        $runId = null;
+        DB::transaction(function () use ($package, $rows, $qcActualIndices, $packageDataIds, &$runId) {
+            $totalNormal    = 0;
+            $flaggedCount   = 0;
+            $qcSampleCount  = 0;
+            $now            = now();
+
+            $run = Phase2Run::create([
+                'source_package_id' => $package->id,
+                'status'            => 'running',
+                'started_at'        => $now,
+            ]);
+
+            // total_non_normal = items in package not in CSV
+            $csvIds = array_flip(array_column($rows, 'data_id'));
+            $totalNonNormal = $packageDataIds->filter(fn ($_, $id) => ! isset($csvIds[$id]))->count();
+
+            $inserts = [];
+            foreach ($rows as $idx => $row) {
+                $flagged     = strtolower($row['llm_label']) !== 'normal';
+                $inQcSample  = isset($qcActualIndices[$idx]);
+
+                if (! $flagged) {
+                    $totalNormal++;
+                }
+                if ($flagged) {
+                    $flaggedCount++;
+                }
+                if ($inQcSample) {
+                    $qcSampleCount++;
+                }
+
+                $inserts[] = [
+                    'phase2_run_id' => $run->id,
+                    'data_id'       => $row['data_id'],
+                    'llm_label'     => $row['llm_label'],
+                    'confidence'    => $row['confidence'],
+                    'reasoning'     => $row['reasoning'],
+                    'flagged'       => $flagged,
+                    'in_qc_sample'  => $inQcSample,
+                    'status'        => 'done',
+                    'created_at'    => $now,
+                    'updated_at'    => $now,
+                ];
+            }
+
+            collect($inserts)->chunk(500)->each(fn ($chunk) => AiScreening::insert($chunk->all()));
+
+            $run->update([
+                'status'          => 'completed',
+                'total_normal'    => $totalNormal + $flaggedCount, // all csv rows were originally Normal
+                'total_non_normal'=> $totalNonNormal,
+                'processed'       => count($rows),
+                'flagged_count'   => $flaggedCount,
+                'qc_sample_count' => $qcSampleCount,
+                'completed_at'    => now(),
+            ]);
+
+            $completedRun = $run;
+            $runId = $run->id;
+        });
+
+        return redirect()->route('phase2.show', $runId)
+            ->with('success', 'CSV imported successfully. Run completed.');
     }
 
     public function show(Phase2Run $run)
@@ -158,37 +242,12 @@ class Phase2Controller extends Controller
                 : null;
         }
 
-        $errorCount = AiScreening::where('phase2_run_id', $run->id)
-            ->where('status', 'error')
-            ->count();
-
         return view('_app.app', [
             'content'     => 'phase2.show',
             'headerdata'  => ['pagetitle' => 'Phase 2 Run #' . $run->id],
             'sidenavdata' => ['active' => 'phase2'],
-            'contentdata' => compact('run', 'screenings', 'lcr', 'fnr', 'errorCount'),
+            'contentdata' => compact('run', 'screenings', 'lcr', 'fnr'),
         ]);
-    }
-
-    public function cancel(Phase2Run $run)
-    {
-        if (! in_array($run->status, ['pending', 'running', 'batch_submitted'])) {
-            return back()->withErrors(['run' => 'This run cannot be cancelled.']);
-        }
-
-        // Cancel the OpenAI batch if one is in flight
-        if ($run->openai_batch_id && $run->status === 'batch_submitted') {
-            $apiKey = AiSetting::singleton()->getOpenAiApiKey();
-            if ($apiKey) {
-                Http::withToken($apiKey)
-                    ->timeout(15)
-                    ->post("https://api.openai.com/v1/batches/{$run->openai_batch_id}/cancel");
-            }
-        }
-
-        $run->update(['status' => 'cancelled', 'completed_at' => now()]);
-
-        return redirect()->route('phase2.index')->with('success', 'Run cancelled.');
     }
 
     public function createPhase3(Phase2Run $run)
@@ -272,39 +331,4 @@ class Phase2Controller extends Controller
             ->with('success', 'Phase 3 package created and annotators notified.');
     }
 
-    public function retryErrors(Phase2Run $run)
-    {
-        if (! in_array($run->status, ['completed', 'failed'])) {
-            return back()->withErrors(['run' => 'Can only retry errors on completed or failed runs.']);
-        }
-
-        $errorCount   = AiScreening::where('phase2_run_id', $run->id)->where('status', 'error')->count();
-        $missingCount = max(0, $run->total_normal - AiScreening::where('phase2_run_id', $run->id)->count());
-        $totalToRetry = $errorCount + $missingCount;
-
-        if ($totalToRetry === 0) {
-            return back()->with('success', 'No error or missing items to retry.');
-        }
-
-        if ($errorCount > 0) {
-            AiScreening::where('phase2_run_id', $run->id)
-                ->where('status', 'error')
-                ->delete();
-            $run->decrement('processed', $errorCount);
-        }
-
-        $run->update(['status' => 'pending', 'error_message' => null]);
-
-        $settings = AiSetting::singleton();
-        if ($settings->provider === AiSetting::PROVIDER_GROQ) {
-            RunPhase2ScreeningGroq::dispatch($run->id);
-        } elseif ($settings->use_batch_api) {
-            RunPhase2Screening::dispatchSync($run->id);
-        } else {
-            RunPhase2ScreeningSync::dispatch($run->id);
-        }
-
-        return redirect()->route('phase2.show', $run->id)
-            ->with('success', "Retrying {$totalToRetry} item(s) ({$errorCount} errors, {$missingCount} missing).");
-    }
 }

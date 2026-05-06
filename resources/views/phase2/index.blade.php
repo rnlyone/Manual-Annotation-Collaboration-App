@@ -1,15 +1,12 @@
 @php
     $runs       = $contentdata['runs'];
     $packages   = $contentdata['packages'];
-    $hasApiKey  = $contentdata['hasApiKey'];
 
     $statusColors = [
-        'pending'          => 'secondary',
-        'running'          => 'primary',
-        'batch_submitted'  => 'info',
-        'completed'        => 'success',
-        'failed'           => 'danger',
-        'cancelled'        => 'warning',
+        'pending'   => 'secondary',
+        'running'   => 'primary',
+        'completed' => 'success',
+        'failed'    => 'danger',
     ];
 @endphp
 
@@ -19,7 +16,7 @@
     <nav aria-label="breadcrumb" class="mb-4">
         <ol class="breadcrumb breadcrumb-style1">
             <li class="breadcrumb-item"><a href="{{ route('dashboard') }}">Home</a></li>
-            <li class="breadcrumb-item active">Phase 2 — LLM Screening</li>
+    <li class="breadcrumb-item active">Phase 2 — LLM Screening</li>
         </ol>
     </nav>
 
@@ -37,43 +34,46 @@
         </div>
     @endif
 
-    @if(! $hasApiKey)
-        <div class="alert alert-warning d-flex gap-2 align-items-center mb-4">
-            <i class="ti ti-key fs-5 flex-shrink-0"></i>
-            <span>No OpenAI API key configured.
-                <a href="{{ route('ai-settings.show') }}" class="alert-link">Go to AI Settings</a> to add one before starting a run.</span>
-        </div>
-    @endif
-
     <div class="row g-4 mb-4">
-        {{-- Start new run card --}}
+        {{-- Import CSV card --}}
         <div class="col-12 col-lg-4">
             <div class="card h-100">
                 <div class="card-header">
-                    <h5 class="mb-0"><i class="ti ti-robot me-2 text-primary"></i>Start New Screening Run</h5>
+                    <h5 class="mb-0"><i class="ti ti-file-upload me-2 text-primary"></i>Import LLM Screening CSV</h5>
                 </div>
                 <div class="card-body">
                     <p class="text-muted small mb-3">
-                        Select a Phase 1 package. The LLM will screen all <strong>Normal-labeled</strong> items
-                        to surface potential false negatives for Phase 3 human re-annotation.
+                        Upload a CSV with columns: <code>id</code>, <code>llm_label</code>,
+                        <code>llm_confidence</code>, <code>llm_reasoning</code>.
+                        Items not in the CSV are treated as non-Normal (skipped by LLM).
                     </p>
-                    <form action="{{ route('phase2.store') }}" method="POST">
+                    <form action="{{ route('phase2.store') }}" method="POST" enctype="multipart/form-data">
                         @csrf
                         <div class="mb-3">
                             <label class="form-label" for="source_package_id">Phase 1 Package</label>
                             <select class="form-select" id="source_package_id" name="source_package_id" required>
                                 <option value="">— Select a package —</option>
                                 @foreach($packages as $pkg)
-                                    <option value="{{ $pkg->id }}">{{ $pkg->name }}</option>
+                                    <option value="{{ $pkg->id }}" {{ old('source_package_id') == $pkg->id ? 'selected' : '' }}>
+                                        {{ $pkg->name }}
+                                    </option>
                                 @endforeach
                             </select>
+                            @error('source_package_id')
+                                <div class="text-danger small mt-1">{{ $message }}</div>
+                            @enderror
                         </div>
-                        <button type="submit" class="btn btn-primary w-100" {{ ! $hasApiKey ? 'disabled' : '' }}>
-                            <i class="ti ti-player-play me-1"></i>Start Screening
+                        <div class="mb-3">
+                            <label class="form-label" for="csv_file">CSV File</label>
+                            <input type="file" class="form-control" id="csv_file" name="csv_file"
+                                   accept=".csv,text/csv" required>
+                            @error('csv_file')
+                                <div class="text-danger small mt-1">{{ $message }}</div>
+                            @enderror
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="ti ti-upload me-1"></i>Import & Create Run
                         </button>
-                        @if(! $hasApiKey)
-                            <p class="text-center text-warning small mt-2 mb-0">Configure API key first</p>
-                        @endif
                     </form>
                 </div>
             </div>
@@ -85,7 +85,7 @@
                 @php
                     $totalRuns      = $runs->count();
                     $completedRuns  = $runs->where('status', 'completed')->count();
-                    $runningRuns    = $runs->whereIn('status', ['pending','running','batch_submitted'])->count();
+                    $runningRuns    = $runs->whereIn('status', ['pending','running'])->count();
                     $totalFlagged   = $runs->sum('flagged_count');
                 @endphp
                 <div class="col-6">
@@ -162,7 +162,7 @@
                                     <span class="badge bg-label-{{ $statusColors[$run['status']] ?? 'secondary' }}">
                                         {{ ucfirst($run['status']) }}
                                     </span>
-                                    @if(in_array($run['status'], ['running', 'batch_submitted']))
+                                    @if(in_array($run['status'], ['running']))
                                         <span class="spinner-border spinner-border-sm text-primary ms-1" role="status"></span>
                                     @endif
                                 </td>
@@ -213,10 +213,3 @@
     </div>
 
 </div>
-
-@if($runs->contains('status', 'running') || $runs->contains('status', 'pending') || $runs->contains('status', 'batch_submitted'))
-<script>
-    // Auto-refresh every 10 seconds while a run is active
-    setTimeout(() => window.location.reload(), 10000);
-</script>
-@endif
