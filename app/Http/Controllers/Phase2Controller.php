@@ -168,7 +168,9 @@ class Phase2Controller extends Controller
                 $packageDataIds = $packageRows->pluck('data_id')->flip();
                 $subset         = array_values(array_filter($rows, fn ($r) => $packageDataIds->has($r['data_id'])));
 
-                $totalNonNormal = $this->nonNormalDataIdsForPackage($packageId)->count();
+                // Non-normal = items in the source package NOT in the CSV.
+                // The CSV contained all Phase 1 Normal items, so the remainder are DAS.
+                $totalNonNormal = max(0, PackageData::where('package_id', $packageId)->count() - count($subset));
 
                 // Fetch Phase 1 annotations for each data_id in this package.
                 // annotated_at stores the package_id so we scope precisely.
@@ -326,9 +328,9 @@ class Phase2Controller extends Controller
                 : null;
         }
 
-        // Live Phase 1 non-normal count from annotations
-        // (stored $run->total_non_normal may be stale/zero for old CSV imports)
-        $nonNormalDataIds = $this->nonNormalDataIdsForPackage($run->source_package_id);
+        // Non-normal = items in the source package not present in this run's ai_screenings.
+        // The CSV contained all Phase 1 Normal items; everything else is DAS.
+        $nonNormalDataIds = $this->nonNormalDataIdsForRun($run);
         $nonNormalCount   = $nonNormalDataIds->count();
         $missingNonNormalCount = 0;
 
@@ -373,8 +375,8 @@ class Phase2Controller extends Controller
                 ->where('in_qc_sample', true)
                 ->pluck('data_id');
 
-            // 3) Phase 1 Non-Normal items from actual Phase 1 annotator annotations.
-            $nonNormalDataIds = $this->nonNormalDataIdsForPackage($run->source_package_id);
+            // 3) Phase 1 Non-Normal items: package items not screened by LLM (i.e., were DAS in Phase 1).
+            $nonNormalDataIds = $this->nonNormalDataIdsForRun($run);
 
             $allDataIds = $flaggedDataIds
                 ->merge($qcDataIds)
@@ -435,7 +437,7 @@ class Phase2Controller extends Controller
             return back()->withErrors(['run' => 'No Phase 3 package linked to this run.']);
         }
 
-        $nonNormalDataIds = $this->nonNormalDataIdsForPackage($run->source_package_id);
+        $nonNormalDataIds = $this->nonNormalDataIdsForRun($run);
 
         if ($nonNormalDataIds->isEmpty()) {
             return redirect()->route('phase2.show', $run->id)
@@ -484,28 +486,23 @@ class Phase2Controller extends Controller
     }
 
     /**
-     * Return data_ids of Phase 1 non-Normal (DAS) items in the given source package.
+     * Return data_ids of Phase 1 non-Normal (DAS) items for a completed run.
      *
-     * Scoped to users assigned to that package so we only read Phase 1 labels.
-     * The annotation system prevents those users from re-annotating the same items
-     * in Phase 3, so their records always reflect the original Phase 1 label.
-     *
-     * Uses plain string comparisons — compatible with both SQLite and MySQL.
-     * Normal = empty category_ids array ([]); anything else = DAS.
+     * The CSV uploaded for Phase 2 contained ALL items Phase 1 annotators
+     * labelled as Normal (to be screened by the LLM). Those items are stored in
+     * ai_screenings. Items in the source package that are NOT in ai_screenings
+     * were labelled DAS in Phase 1 and therefore never went through LLM screening.
+     * This is more reliable than re-reading annotations because annotated_at was
+     * only added later and may not be set on older records.
      */
-    private function nonNormalDataIdsForPackage(int $sourcePackageId): \Illuminate\Support\Collection
+    private function nonNormalDataIdsForRun(Phase2Run $run): \Illuminate\Support\Collection
     {
-        // annotated_at stores the package_id of the package the annotation was made in.
-        // Filtering on annotated_at = $sourcePackageId ensures we only count annotations
-        // actually submitted during Phase 1 work for this package — never Phase 3 re-annotations
-        // of the same data items by the same users.
-        return Annotation::query()
-            ->select('data_id')
-            ->where('annotated_at', $sourcePackageId)
-            ->whereNotNull('category_ids')
-            ->where('category_ids', '!=', '[]')
-            ->where('category_ids', '!=', '')
-            ->distinct()
+        return PackageData::where('package_id', $run->source_package_id)
+            ->whereNotIn('data_id', function ($q) use ($run) {
+                $q->select('data_id')
+                  ->from('ai_screenings')
+                  ->where('phase2_run_id', $run->id);
+            })
             ->pluck('data_id');
     }
 
