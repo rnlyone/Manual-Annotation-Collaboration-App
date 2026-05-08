@@ -13,6 +13,7 @@ class AiScreening extends Model
         'phase2_run_id',
         'data_id',
         'annotation_id',
+        'phase1_label',
         'llm_label',
         'confidence',
         'reasoning',

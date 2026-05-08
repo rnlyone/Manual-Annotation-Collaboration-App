@@ -3,6 +3,13 @@
 	$sessions = $contentdata['sessions'] ?? $sessions ?? collect();
 	$users = $contentdata['users'] ?? $users ?? collect();
 	$packageSummaries = $contentdata['packageSummaries'] ?? $packageSummaries ?? collect();
+	$totalItems       = $contentdata['totalItems'] ?? 0;
+	$totalAnnotated   = $contentdata['totalAnnotated'] ?? 0;
+	$totalUnannotated = $contentdata['totalUnannotated'] ?? 0;
+	$overallProgress  = $contentdata['overallProgress'] ?? 0;
+	$totalDAS         = $contentdata['totalDAS'] ?? 0;
+	$totalNormal      = $contentdata['totalNormal'] ?? 0;
+	$categoryDistrib  = $contentdata['categoryDistrib'] ?? collect();
 @endphp
 
 @push('styles')
@@ -70,6 +77,123 @@
 @endpush
 
 <div class="container-xxl flex-grow-1 container-p-y">
+
+	{{-- ─── Infographics ─── --}}
+	<div class="row g-4 mb-4">
+
+		{{-- Stat cards --}}
+		<div class="col-12 col-xl-8">
+			<div class="row g-3 h-100">
+				<div class="col-6 col-md-3">
+					<div class="card text-center h-100 py-2">
+						<div class="card-body p-3 d-flex flex-column justify-content-center">
+							<div class="fw-bold fs-3 text-primary">{{ number_format($totalItems) }}</div>
+							<div class="text-muted small mt-1">Total Data Items</div>
+						</div>
+					</div>
+				</div>
+				<div class="col-6 col-md-3">
+					<div class="card text-center h-100 py-2">
+						<div class="card-body p-3 d-flex flex-column justify-content-center">
+							<div class="fw-bold fs-3 text-success">{{ number_format($totalAnnotated) }}</div>
+							<div class="text-muted small mt-1">Annotated</div>
+						</div>
+					</div>
+				</div>
+				<div class="col-6 col-md-3">
+					<div class="card text-center h-100 py-2">
+						<div class="card-body p-3 d-flex flex-column justify-content-center">
+							<div class="fw-bold fs-3 text-warning">{{ number_format($totalUnannotated) }}</div>
+							<div class="text-muted small mt-1">Unannotated</div>
+						</div>
+					</div>
+				</div>
+				<div class="col-6 col-md-3">
+					<div class="card text-center h-100 py-2">
+						<div class="card-body p-3 d-flex flex-column justify-content-center">
+							<div class="fw-bold fs-3 text-info">{{ $overallProgress }}%</div>
+							<div class="text-muted small mt-1">Overall Progress</div>
+						</div>
+					</div>
+				</div>
+
+				{{-- Overall progress bar card --}}
+				<div class="col-12">
+					<div class="card">
+						<div class="card-body py-3 px-4">
+							<div class="d-flex justify-content-between align-items-center mb-2">
+								<span class="fw-semibold">Annotation Progress</span>
+								<small class="text-muted">{{ number_format($totalAnnotated) }} / {{ number_format($totalItems) }}</small>
+							</div>
+							<div class="progress" style="height: 12px; border-radius: 6px;">
+								<div class="progress-bar bg-success" style="width: {{ min($overallProgress, 100) }}%" title="{{ $overallProgress }}% annotated"></div>
+							</div>
+							<div class="d-flex justify-content-between mt-1">
+								<small class="text-success">Normal: {{ number_format($totalNormal) }}</small>
+								<small class="text-danger">DAS: {{ number_format($totalDAS) }}</small>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				{{-- Per-package mini bars --}}
+				@if($packageSummaries->isNotEmpty())
+				<div class="col-12">
+					<div class="card">
+						<div class="card-body py-3 px-4">
+							<div class="fw-semibold mb-3">Per-Package Progress</div>
+							<div class="d-flex flex-column gap-2">
+								@foreach ($packageSummaries as $summary)
+								<div>
+									<div class="d-flex justify-content-between mb-1">
+										<small class="text-truncate" style="max-width: 60%;" title="{{ $summary['name'] }}">{{ $summary['name'] }}</small>
+										<small class="text-muted">{{ $summary['annotated_items'] }} / {{ $summary['total_items'] }} ({{ $summary['progress_percent'] }}%)</small>
+									</div>
+									<div class="progress" style="height: 7px; border-radius: 4px;">
+										<div class="progress-bar" role="progressbar"
+											style="width: {{ $summary['progress_percent'] }}%;"
+											aria-valuenow="{{ $summary['progress_percent'] }}"
+											aria-valuemin="0" aria-valuemax="100"></div>
+									</div>
+								</div>
+								@endforeach
+							</div>
+						</div>
+					</div>
+				</div>
+				@endif
+			</div>
+		</div>
+
+		{{-- Donut chart: label distribution --}}
+		<div class="col-12 col-xl-4">
+			<div class="card h-100">
+				<div class="card-body d-flex flex-column">
+					<div class="fw-semibold mb-1">Label Distribution</div>
+					<small class="text-muted mb-3">Distinct data items per category (DAS annotations)</small>
+					<div class="flex-grow-1 d-flex align-items-center justify-content-center">
+						<canvas id="labelDistribChart" style="max-height: 220px;"></canvas>
+					</div>
+					<div class="mt-3">
+						@php
+							$chartColors = ['#696cff', '#71dd37', '#ffab00', '#ff3e1d', '#03c3ec', '#8592a3'];
+						@endphp
+						<div class="d-flex flex-wrap gap-2 justify-content-center">
+							<span class="badge" style="background: #8592a3;">Normal: {{ number_format($totalNormal) }}</span>
+							@foreach ($categoryDistrib as $i => $cat)
+								<span class="badge" style="background: {{ $chartColors[$i % count($chartColors)] }};">
+									{{ $cat['name'] }}: {{ number_format($cat['count']) }}
+								</span>
+							@endforeach
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+	</div>
+	{{-- ─── /Infographics ─── --}}
+
 	<div class="row g-6">
 		<div class="col-12">
 			<div class="card">
@@ -106,57 +230,6 @@
 					</div>
 				</div>
 				<div class="card-body">
-					@if ($packageSummaries->isNotEmpty())
-						<div class="mb-4">
-							<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-								<h6 class="mb-0">Package progress overview</h6>
-								<small class="text-muted">Tracks total items, completed annotations, and current assignees.</small>
-							</div>
-							<div class="table-responsive">
-								<table class="table table-sm table-hover align-middle package-progress-table mb-0">
-									<thead>
-										<tr>
-											<th>Package</th>
-											<th style="min-width: 260px;">Progress</th>
-											<th>Annotators</th>
-										</tr>
-									</thead>
-									<tbody>
-										@foreach ($packageSummaries as $summary)
-											<tr>
-												<td>
-													<div class="fw-semibold">{{ $summary['name'] }}</div>
-													<small class="text-muted">{{ $summary['annotated_items'] }} / {{ $summary['total_items'] }} annotated</small>
-												</td>
-												<td>
-													<div class="d-flex align-items-center gap-2">
-														<div class="progress flex-grow-1">
-															<div class="progress-bar" role="progressbar" style="width: {{ $summary['progress_percent'] }}%;" aria-valuenow="{{ $summary['progress_percent'] }}" aria-valuemin="0" aria-valuemax="100"></div>
-														</div>
-														<small class="text-muted">{{ $summary['progress_percent'] }}%</small>
-													</div>
-													@if ($summary['remaining'] > 0)
-														<small class="text-muted">{{ $summary['remaining'] }} remaining</small>
-													@endif
-												</td>
-												<td>
-													@if (!empty($summary['annotators']))
-														<div class="d-flex flex-wrap gap-1">
-															@foreach ($summary['annotators'] as $annotator)
-																<span class="badge bg-label-primary annotator-badge">{{ $annotator }}</span>
-															@endforeach
-														</div>
-													@else
-														<span class="text-muted">Unassigned</span>
-													@endif
-												</td>
-											</tr>
-										@endforeach
-									</tbody>
-								</table>
-							</div>
-						</div>
-					@endif
 					<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
 						<div class="form-check">
 							<input class="form-check-input" type="checkbox" id="selectAllRows">
@@ -530,5 +603,58 @@
 			toggleSnippet($(this));
 		});
 	});
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+	(function () {
+		const chartColors = ['#696cff','#71dd37','#ffab00','#ff3e1d','#03c3ec','#8592a3'];
+
+		@php
+			$chartLabels = $categoryDistrib->pluck('name')->toJson();
+			$chartCounts = $categoryDistrib->pluck('count')->toJson();
+			$chartColorsPhp = json_encode(array_slice(['#696cff','#71dd37','#ffab00','#ff3e1d','#03c3ec','#8592a3'], 0, $categoryDistrib->count()));
+		@endphp
+
+		const labels = {!! $chartLabels !!};
+		const counts = {!! $chartCounts !!};
+		const colors = {!! $chartColorsPhp !!};
+
+		if (labels.length === 0) return;
+
+		const ctx = document.getElementById('labelDistribChart');
+		if (!ctx) return;
+
+		new Chart(ctx, {
+			type: 'doughnut',
+			data: {
+				labels: labels,
+				datasets: [{
+					data: counts,
+					backgroundColor: colors,
+					borderWidth: 2,
+					borderColor: 'transparent',
+					hoverOffset: 6,
+				}]
+			},
+			options: {
+				responsive: true,
+				maintainAspectRatio: true,
+				cutout: '68%',
+				plugins: {
+					legend: { display: false },
+					tooltip: {
+						callbacks: {
+							label: function (ctx) {
+								const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+								const pct = total > 0 ? ((ctx.parsed / total) * 100).toFixed(1) : 0;
+								return ` ${ctx.label}: ${ctx.parsed.toLocaleString()} (${pct}%)`;
+							}
+						}
+					}
+				}
+			}
+		});
+	})();
 </script>
 @endpush

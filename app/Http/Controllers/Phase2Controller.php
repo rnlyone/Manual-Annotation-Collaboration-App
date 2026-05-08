@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\AiScreening;
 use App\Models\Annotation;
+use App\Models\Category;
 use App\Models\Package;
 use App\Models\PackageData;
 use App\Models\Phase2Run;
@@ -141,6 +142,27 @@ class Phase2Controller extends Controller
         DB::transaction(function () use ($rows, $packageMap, &$createdRunIds) {
             $now = now();
 
+            // Fetch all categories once for label resolution
+            // id => name  (e.g. 1 => "Depresi", 2 => "Ansietas", 3 => "Stres")
+            $categoryNames = Category::pluck('name', 'id');
+
+            // Helper: resolve a category_ids value (JSON array or PHP array) to a label string.
+            // Empty / null → "Normal". Multiple categories joined with "/".
+            $resolvePhase1Label = function ($categoryIds) use ($categoryNames): string {
+                if ($categoryIds === null || $categoryIds === '' || $categoryIds === '[]') {
+                    return 'Normal';
+                }
+                $ids = is_array($categoryIds)
+                    ? $categoryIds
+                    : (json_decode($categoryIds, true) ?? []);
+                if (empty($ids)) {
+                    return 'Normal';
+                }
+                return collect($ids)
+                    ->map(fn ($id) => $categoryNames[$id] ?? "ID:{$id}")
+                    ->join('/');
+            };
+
             foreach ($packageMap as $packageId => $packageRows) {
                 // Build the subset of CSV rows for this package
                 $packageDataIds = $packageRows->pluck('data_id')->flip();
@@ -148,9 +170,18 @@ class Phase2Controller extends Controller
 
                 $totalNonNormal = $this->nonNormalDataIdsForPackage($packageId)->count();
 
+                // Fetch Phase 1 annotations for each data_id in this package.
+                // annotated_at stores the package_id so we scope precisely.
+                // If multiple annotators did the same item, take the first (lowest id).
+                $subsetDataIds       = collect($subset)->pluck('data_id');
+                $phase1Annotations   = Annotation::where('annotated_at', $packageId)
+                    ->whereIn('data_id', $subsetDataIds)
+                    ->orderBy('id')
+                    ->get(['id', 'data_id', 'category_ids'])
+                    ->unique('data_id')   // keep first per data_id
+                    ->keyBy('data_id');
+
                 // Determine whether the CSV already carries phase3_group assignments.
-                // If even one row has it, we trust the CSV completely; otherwise we fall
-                // back to random 10 % sampling of LLM-confirmed Normal rows.
                 $hasGroupColumn = collect($subset)->contains(fn ($r) => $r['phase3_group'] !== null);
 
                 // Build QC index when falling back to random sampling
@@ -158,8 +189,8 @@ class Phase2Controller extends Controller
                 if (! $hasGroupColumn) {
                     $normalIndices = array_keys(array_filter($subset, fn ($r) => strtolower($r['llm_label']) === 'normal'));
                     if (! empty($normalIndices)) {
-                        $qcCount   = max(1, (int) round(count($normalIndices) * 0.1));
-                        $picked    = (array) array_rand($normalIndices, min($qcCount, count($normalIndices)));
+                        $qcCount         = max(1, (int) round(count($normalIndices) * 0.1));
+                        $picked          = (array) array_rand($normalIndices, min($qcCount, count($normalIndices)));
                         $qcActualIndices = array_flip($picked);
                     }
                 }
@@ -188,9 +219,15 @@ class Phase2Controller extends Controller
                     if ($flagged)   $flaggedCount++;
                     if ($inQcSample) $qcSampleCount++;
 
+                    // Look up Phase 1 human annotation for this item
+                    $ann          = $phase1Annotations->get($row['data_id']);
+                    $phase1Label  = $resolvePhase1Label($ann?->category_ids);
+
                     $inserts[] = [
                         'phase2_run_id' => $run->id,
                         'data_id'       => $row['data_id'],
+                        'annotation_id' => $ann?->id,
+                        'phase1_label'  => $phase1Label,
                         'llm_label'     => $row['llm_label'],
                         'confidence'    => $row['confidence'],
                         'reasoning'     => $row['reasoning'],

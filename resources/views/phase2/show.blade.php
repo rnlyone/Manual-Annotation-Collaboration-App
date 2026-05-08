@@ -293,6 +293,7 @@
                         <tr>
                             <th style="width:60px;">Flags</th>
                             <th>Content</th>
+                            <th style="width:110px;">Phase 1 Label</th>
                             <th style="width:110px;">LLM Label</th>
                             <th style="width:90px;">Confidence</th>
                             <th>Reasoning</th>
@@ -314,6 +315,26 @@
                                     <span class="d-inline-block text-truncate" style="max-width: 360px;" title="{{ $s->data->content ?? '' }}">
                                         {{ $s->data->content ?? '—' }}
                                     </span>
+                                </td>
+                                <td>
+                                    @php
+                                        $p1Color = match(strtolower($s->phase1_label ?? '')) {
+                                            'depresi'         => 'danger',
+                                            'ansietas'        => 'warning',
+                                            'stres'           => 'info',
+                                            'normal'          => 'secondary',
+                                            default           => 'light',
+                                        };
+                                        // Agreement indicator: Phase 1 normal vs LLM flagged = mismatch
+                                        $mismatch = $s->phase1_label && $s->llm_label
+                                            && (strtolower($s->phase1_label) === 'normal') !== (strtolower($s->llm_label) === 'normal');
+                                    @endphp
+                                    <span class="badge bg-label-{{ $p1Color }}" title="Human Phase 1 label">
+                                        {{ $s->phase1_label ?? '—' }}
+                                    </span>
+                                    @if($mismatch)
+                                        <span title="LLM disagrees with Phase 1 human label" style="font-size:0.75rem;">⚠️</span>
+                                    @endif
                                 </td>
                                 <td>
                                     @php

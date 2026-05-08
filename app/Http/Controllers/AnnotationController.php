@@ -275,6 +275,32 @@ class AnnotationController extends Controller
             ];
         });
 
+        // Aggregate stats
+        $totalItems      = (int) PackageData::count();
+        $totalAnnotated  = (int) Annotation::distinct('data_id')->count('data_id');
+        $totalUnannotated = max(0, $totalItems - $totalAnnotated);
+        $overallProgress = $totalItems > 0 ? round(($totalAnnotated / $totalItems) * 100, 1) : 0;
+
+        // Non-normal (has DAS label) vs normal (annotated but empty category_ids)
+        $totalDAS    = (int) Annotation::whereNotNull('category_ids')
+            ->where('category_ids', '!=', '[]')
+            ->where('category_ids', '!=', '')
+            ->distinct('data_id')->count('data_id');
+        $totalNormal = max(0, $totalAnnotated - $totalDAS);
+
+        // Category distribution: count distinct data_ids tagged with each category
+        $categories        = Category::orderBy('id')->get(['id', 'name']);
+        $categoryDistrib   = $categories->map(function (Category $cat) {
+            // SQLite/MySQL compatible: count annotations whose category_ids contains this id
+            $count = Annotation::whereNotNull('category_ids')
+                ->where('category_ids', '!=', '[]')
+                ->where('category_ids', '!=', '')
+                ->whereRaw("category_ids LIKE ?", ['%' . $cat->id . '%'])
+                ->distinct('data_id')
+                ->count('data_id');
+            return ['id' => $cat->id, 'name' => $cat->name, 'count' => $count];
+        });
+
         $sessions = SessionLog::with(['user:id,name', 'package:id,name'])
             ->latest()
             ->limit(50)
@@ -301,6 +327,13 @@ class AnnotationController extends Controller
                 'sessions' => $sessions,
                 'users' => $users,
                 'packageSummaries' => $packageSummaries,
+                'totalItems' => $totalItems,
+                'totalAnnotated' => $totalAnnotated,
+                'totalUnannotated' => $totalUnannotated,
+                'overallProgress' => $overallProgress,
+                'totalDAS' => $totalDAS,
+                'totalNormal' => $totalNormal,
+                'categoryDistrib' => $categoryDistrib,
             ],
         ]);
     }
