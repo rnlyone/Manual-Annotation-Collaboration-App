@@ -168,10 +168,6 @@ class Phase2Controller extends Controller
                 $packageDataIds = $packageRows->pluck('data_id')->flip();
                 $subset         = array_values(array_filter($rows, fn ($r) => $packageDataIds->has($r['data_id'])));
 
-                // Non-normal = items in the source package NOT in the CSV.
-                // The CSV contained all Phase 1 Normal items, so the remainder are DAS.
-                $totalNonNormal = max(0, PackageData::where('package_id', $packageId)->count() - count($subset));
-
                 // Fetch Phase 1 annotations for each data_id in this package.
                 // annotated_at stores the package_id so we scope precisely.
                 // If multiple annotators did the same item, take the first (lowest id).
@@ -203,10 +199,11 @@ class Phase2Controller extends Controller
                     'started_at'        => $now,
                 ]);
 
-                $totalNormal   = 0;
-                $flaggedCount  = 0;
-                $qcSampleCount = 0;
-                $inserts       = [];
+                $totalNormal    = 0;
+                $totalNonNormal = 0;
+                $flaggedCount   = 0;
+                $qcSampleCount  = 0;
+                $inserts        = [];
 
                 foreach ($subset as $idx => $row) {
                     $flagged = strtolower($row['llm_label']) !== 'normal';
@@ -222,8 +219,10 @@ class Phase2Controller extends Controller
                     if ($inQcSample) $qcSampleCount++;
 
                     // Look up Phase 1 human annotation for this item
-                    $ann          = $phase1Annotations->get($row['data_id']);
-                    $phase1Label  = $resolvePhase1Label($ann?->category_ids);
+                    $ann         = $phase1Annotations->get($row['data_id']);
+                    $phase1Label = $resolvePhase1Label($ann?->category_ids);
+
+                    if ($phase1Label !== 'Normal') $totalNonNormal++;
 
                     $inserts[] = [
                         'phase2_run_id' => $run->id,
@@ -497,12 +496,11 @@ class Phase2Controller extends Controller
      */
     private function nonNormalDataIdsForRun(Phase2Run $run): \Illuminate\Support\Collection
     {
-        return PackageData::where('package_id', $run->source_package_id)
-            ->whereNotIn('data_id', function ($q) use ($run) {
-                $q->select('data_id')
-                  ->from('ai_screenings')
-                  ->where('phase2_run_id', $run->id);
-            })
+        // Non-normal = rows in ai_screenings for this run where the Phase 1 human label was DAS.
+        // The CSV includes ALL items (Normal + DAS), so we rely on the stored phase1_label.
+        return AiScreening::where('phase2_run_id', $run->id)
+            ->whereNotNull('phase1_label')
+            ->where('phase1_label', '!=', 'Normal')
             ->pluck('data_id');
     }
 
