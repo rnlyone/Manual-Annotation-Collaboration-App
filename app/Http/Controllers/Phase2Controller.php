@@ -458,22 +458,18 @@ class Phase2Controller extends Controller
      */
     private function nonNormalDataIdsForPackage(int $sourcePackageId): \Illuminate\Support\Collection
     {
-        $phase1UserIds = UserPackage::where('package_id', $sourcePackageId)->pluck('user_id');
-
-        if ($phase1UserIds->isEmpty()) {
-            return collect();
-        }
-
+        // annotated_at stores the package_id of the package the annotation was made in.
+        // Filtering on annotated_at = $sourcePackageId ensures we only count annotations
+        // actually submitted during Phase 1 work for this package — never Phase 3 re-annotations
+        // of the same data items by the same users.
         return Annotation::query()
-            ->select('annotations.data_id')
-            ->join('package_data as pd_src', 'pd_src.data_id', '=', 'annotations.data_id')
-            ->where('pd_src.package_id', $sourcePackageId)
-            ->whereIn('annotations.user_id', $phase1UserIds)
-            ->whereNotNull('annotations.category_ids')
-            ->where('annotations.category_ids', '!=', '[]')
-            ->where('annotations.category_ids', '!=', '')
+            ->select('data_id')
+            ->where('annotated_at', $sourcePackageId)
+            ->whereNotNull('category_ids')
+            ->where('category_ids', '!=', '[]')
+            ->where('category_ids', '!=', '')
             ->distinct()
-            ->pluck('annotations.data_id');
+            ->pluck('data_id');
     }
 
 }
