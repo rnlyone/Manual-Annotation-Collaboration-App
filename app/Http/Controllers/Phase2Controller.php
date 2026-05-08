@@ -123,10 +123,9 @@ class Phase2Controller extends Controller
                 $packageDataIds = $packageRows->pluck('data_id')->flip();
                 $subset         = array_filter($rows, fn ($r) => $packageDataIds->has($r['data_id']));
 
-                // All items in this package (to compute non-normal count)
-                $allPackageDataIds = PackageData::where('package_id', $packageId)->pluck('data_id')->flip();
-                $csvIds            = array_flip(array_column($subset, 'data_id'));
-                $totalNonNormal    = $allPackageDataIds->filter(fn ($_, $id) => ! isset($csvIds[$id]))->count();
+                // Count Phase 1 non-normal items from actual annotations
+                // (more reliable than counting package items absent from the CSV)
+                $totalNonNormal = $this->nonNormalDataIdsForPackage($packageId)->count();
 
                 // QC sample: 10% random of Normal-labeled rows
                 $subsetValues  = array_values($subset);
@@ -230,7 +229,9 @@ class Phase2Controller extends Controller
                 ->join('package_data', 'package_data.data_id', '=', 'annotations.data_id')
                 ->where('package_data.package_id', $run->phase3_package_id)
                 ->whereIn('annotations.data_id', $flaggedDataIds)
-                ->whereRaw("JSON_LENGTH(annotations.category_ids) > 0")
+                ->whereNotNull('annotations.category_ids')
+                ->where('annotations.category_ids', '!=', '[]')
+                ->where('annotations.category_ids', '!=', '')
                 ->distinct('annotations.data_id')
                 ->count('annotations.data_id');
 
@@ -250,7 +251,9 @@ class Phase2Controller extends Controller
                 ->join('package_data', 'package_data.data_id', '=', 'annotations.data_id')
                 ->where('package_data.package_id', $run->phase3_package_id)
                 ->whereIn('annotations.data_id', $qcDataIds)
-                ->whereRaw("JSON_LENGTH(annotations.category_ids) > 0")
+                ->whereNotNull('annotations.category_ids')
+                ->where('annotations.category_ids', '!=', '[]')
+                ->where('annotations.category_ids', '!=', '')
                 ->distinct('annotations.data_id')
                 ->count('annotations.data_id');
 
@@ -259,11 +262,24 @@ class Phase2Controller extends Controller
                 : null;
         }
 
+        // Live Phase 1 non-normal count from annotations
+        // (stored $run->total_non_normal may be stale/zero for old CSV imports)
+        $nonNormalDataIds = $this->nonNormalDataIdsForPackage($run->source_package_id);
+        $nonNormalCount   = $nonNormalDataIds->count();
+        $missingNonNormalCount = 0;
+
+        if ($run->phase3_package_id && $nonNormalCount > 0) {
+            $alreadyInPhase3       = PackageData::where('package_id', $run->phase3_package_id)
+                ->whereIn('data_id', $nonNormalDataIds)
+                ->count();
+            $missingNonNormalCount = max(0, $nonNormalCount - $alreadyInPhase3);
+        }
+
         return view('_app.app', [
             'content'     => 'phase2.show',
             'headerdata'  => ['pagetitle' => 'Phase 2 Run #' . $run->id],
             'sidenavdata' => ['active' => 'phase2'],
-            'contentdata' => compact('run', 'screenings', 'lcr', 'fnr'),
+            'contentdata' => compact('run', 'screenings', 'lcr', 'fnr', 'nonNormalCount', 'missingNonNormalCount'),
         ]);
     }
 
@@ -293,11 +309,8 @@ class Phase2Controller extends Controller
                 ->where('in_qc_sample', true)
                 ->pluck('data_id');
 
-            // 3) Non-Normal items from Phase 1 source package
-            //    (items in source package that are NOT in ai_screenings = non-Normal)
-            $screened = AiScreening::where('phase2_run_id', $run->id)->pluck('data_id')->flip();
-            $allPackageDataIds = PackageData::where('package_id', $run->source_package_id)->pluck('data_id');
-            $nonNormalDataIds  = $allPackageDataIds->filter(fn ($id) => ! $screened->has($id));
+            // 3) Phase 1 Non-Normal items from actual Phase 1 annotator annotations.
+            $nonNormalDataIds = $this->nonNormalDataIdsForPackage($run->source_package_id);
 
             $allDataIds = $flaggedDataIds
                 ->merge($qcDataIds)
@@ -346,6 +359,71 @@ class Phase2Controller extends Controller
 
         return redirect()->route('phase2.show', $run->id)
             ->with('success', 'Phase 3 package created and annotators notified.');
+    }
+
+    /**
+     * Add any Phase 1 non-normal items that are missing from an existing Phase 3 package.
+     * Needed when Phase 3 was created before this annotation-based detection was in place.
+     */
+    public function syncNonNormalToPhase3(Phase2Run $run)
+    {
+        if (! $run->phase3_package_id) {
+            return back()->withErrors(['run' => 'No Phase 3 package linked to this run.']);
+        }
+
+        $nonNormalDataIds = $this->nonNormalDataIdsForPackage($run->source_package_id);
+
+        if ($nonNormalDataIds->isEmpty()) {
+            return redirect()->route('phase2.show', $run->id)
+                ->with('success', 'No Phase 1 non-normal items found to sync.');
+        }
+
+        $inserts = $nonNormalDataIds->map(fn ($dataId) => [
+            'package_id' => $run->phase3_package_id,
+            'data_id'    => $dataId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ])->all();
+
+        collect($inserts)->chunk(500)->each(function ($chunk) {
+            PackageData::insertOrIgnore($chunk->all());
+        });
+
+        // Update the stored non-normal count on the run
+        $run->update(['total_non_normal' => $nonNormalDataIds->count()]);
+
+        return redirect()->route('phase2.show', $run->id)
+            ->with('success', "Synced {$nonNormalDataIds->count()} Phase 1 non-normal items into the Phase 3 package.");
+    }
+
+    /**
+     * Return data_ids of Phase 1 non-Normal (DAS) items in the given source package.
+     *
+     * Scoped to users assigned to that package so we only read Phase 1 labels.
+     * The annotation system prevents those users from re-annotating the same items
+     * in Phase 3, so their records always reflect the original Phase 1 label.
+     *
+     * Uses plain string comparisons — compatible with both SQLite and MySQL.
+     * Normal = empty category_ids array ([]); anything else = DAS.
+     */
+    private function nonNormalDataIdsForPackage(int $sourcePackageId): \Illuminate\Support\Collection
+    {
+        $phase1UserIds = UserPackage::where('package_id', $sourcePackageId)->pluck('user_id');
+
+        if ($phase1UserIds->isEmpty()) {
+            return collect();
+        }
+
+        return Annotation::query()
+            ->select('annotations.data_id')
+            ->join('package_data as pd_src', 'pd_src.data_id', '=', 'annotations.data_id')
+            ->where('pd_src.package_id', $sourcePackageId)
+            ->whereIn('annotations.user_id', $phase1UserIds)
+            ->whereNotNull('annotations.category_ids')
+            ->where('annotations.category_ids', '!=', '[]')
+            ->where('annotations.category_ids', '!=', '')
+            ->distinct()
+            ->pluck('annotations.data_id');
     }
 
 }

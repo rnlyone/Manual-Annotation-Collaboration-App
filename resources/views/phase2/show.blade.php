@@ -1,8 +1,10 @@
 @php
-    $run        = $contentdata['run'];
-    $screenings = $contentdata['screenings'];
-    $lcr        = $contentdata['lcr'];
-    $fnr        = $contentdata['fnr'];
+    $run                   = $contentdata['run'];
+    $screenings            = $contentdata['screenings'];
+    $lcr                   = $contentdata['lcr'];
+    $fnr                   = $contentdata['fnr'];
+    $nonNormalCount        = $contentdata['nonNormalCount'];
+    $missingNonNormalCount = $contentdata['missingNonNormalCount'];
 
     $statusColors = [
         'pending'   => 'secondary',
@@ -116,8 +118,8 @@
                 <div class="col-6">
                     <div class="card text-center py-2">
                         <div class="card-body p-2">
-                            <div class="fw-bold fs-4 text-secondary">{{ number_format($run->total_non_normal) }}</div>
-                            <div class="text-muted" style="font-size:0.78rem;">Non-Normal (skipped)</div>
+                            <div class="fw-bold fs-4 text-secondary">{{ number_format($nonNormalCount) }}</div>
+                            <div class="text-muted" style="font-size:0.78rem;">Non-Normal (Phase 1)</div>
                         </div>
                     </div>
                 </div>
@@ -228,12 +230,12 @@
                         </tr>
                         <tr>
                             <td><span class="badge bg-label-secondary">Non-Normal (Phase 1)</span></td>
-                            <td class="text-end fw-bold">{{ number_format($run->total_non_normal) }}</td>
+                            <td class="text-end fw-bold">{{ number_format($nonNormalCount) }}</td>
                             <td class="text-muted small">Items already labeled Depresi/Ansietas/Stres — gets 2 more annotators for majority vote</td>
                         </tr>
                         <tr class="table-light fw-bold">
                             <td>Total Phase 3 items</td>
-                            <td class="text-end">{{ number_format($run->flagged_count + $run->qc_sample_count + $run->total_non_normal) }}</td>
+                            <td class="text-end">{{ number_format($run->flagged_count + $run->qc_sample_count + $nonNormalCount) }}</td>
                             <td></td>
                         </tr>
                     </tbody>
@@ -243,6 +245,20 @@
                 <div class="alert alert-info mt-3 mb-0 d-flex align-items-center gap-2">
                     <i class="ti ti-info-circle fs-5 flex-shrink-0"></i>
                     <span>Click <strong>Create Phase 3 Package</strong> above to generate the re-annotation package and notify annotators.</span>
+                </div>
+            @elseif($missingNonNormalCount > 0)
+                <div class="alert alert-warning mt-3 mb-0 d-flex align-items-center justify-content-between flex-wrap gap-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="ti ti-alert-triangle fs-5 flex-shrink-0"></i>
+                        <span>{{ number_format($missingNonNormalCount) }} Phase 1 non-normal item(s) are missing from the Phase 3 package.</span>
+                    </div>
+                    <form action="{{ route('phase2.syncNonNormal', $run->id) }}" method="POST"
+                          onsubmit="return confirm('Add {{ number_format($missingNonNormalCount) }} missing Phase 1 non-normal items to the Phase 3 package?')">
+                        @csrf
+                        <button type="submit" class="btn btn-warning btn-sm">
+                            <i class="ti ti-refresh me-1"></i>Sync Non-Normal Items
+                        </button>
+                    </form>
                 </div>
             @endif
         </div>

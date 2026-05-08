@@ -46,6 +46,7 @@ Route::middleware('auth')->group(function () {
         Route::get('phase2/{run}', [\App\Http\Controllers\Phase2Controller::class, 'show'])->name('phase2.show');
         Route::delete('phase2/{run}', [\App\Http\Controllers\Phase2Controller::class, 'destroy'])->name('phase2.destroy');
         Route::post('phase2/{run}/create-phase3', [\App\Http\Controllers\Phase2Controller::class, 'createPhase3'])->name('phase2.createPhase3');
+        Route::post('phase2/{run}/sync-non-normal', [\App\Http\Controllers\Phase2Controller::class, 'syncNonNormalToPhase3'])->name('phase2.syncNonNormal');
 
         Route::resource('data', \App\Http\Controllers\DataController::class);
         Route::resource('users', \App\Http\Controllers\UserController::class);

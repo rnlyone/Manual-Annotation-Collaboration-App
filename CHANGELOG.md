@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2026-05-08]
+
+### Fixed
+- Phase 1 non-normal items (DAS labels) were missing from Phase 3 packages when the external LLM screening CSV contained all items (not just Normal ones), causing `total_non_normal = 0`
+- `createPhase3` now detects Phase 1 non-normal items by querying Phase 1 annotations directly (`category_ids` non-Normal) instead of relying on items absent from `ai_screenings`
+- `store` (CSV import) now computes `total_non_normal` from actual Phase 1 annotations instead of the CSV absence heuristic
+
+### Added
+- `syncNonNormalToPhase3` action (`POST phase2/{run}/sync-non-normal`) to add missing Phase 1 non-normal items to an already-created Phase 3 package
+- Phase 2 run detail page now shows a live annotation-based non-normal count (not the stale stored value) and displays a **Sync Non-Normal Items** warning button when items are missing from an existing Phase 3 package
+
 ## [2026-04-28]
 
 ### Added
