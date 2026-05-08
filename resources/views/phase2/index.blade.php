@@ -42,9 +42,12 @@
                 </div>
                 <div class="card-body">
                     <p class="text-muted small mb-3">
-                        Upload a CSV with columns: <code>id</code>, <code>llm_label</code>,
-                        <code>llm_confidence</code>, <code>llm_reasoning</code>.
-                        The system automatically groups rows by package. One run is created per matched Phase 1 package.
+                        Upload a CSV exported from the LLM screening notebook.<br>
+                        Required columns: <code>data_id</code> (or <code>id</code>), <code>llm_label</code>,
+                        <code>llm_confidence</code>, <code>llm_reasoning</code>.<br>
+                        Optional: <code>phase3_group</code> (<code>llm_flagged</code> / <code>normal_sample_10pct</code>)
+                        — if present, QC split is read from the CSV directly instead of being sampled randomly.
+                        The system groups rows by package automatically.
                     </p>
                     <form action="{{ route('phase2.store') }}" method="POST" enctype="multipart/form-data">
                         @csrf

@@ -60,11 +60,23 @@ class Phase2Controller extends Controller
         ]);
 
         // Parse CSV
+        // Accepted formats:
+        //   Legacy:  id, llm_label, llm_confidence, llm_reasoning
+        //   Current: data_id, llm_label, llm_confidence, llm_reasoning
+        //            (plus optional: packages, annotation_labels, annotation_label_ids,
+        //             content, phase3_group)
         $path   = $request->file('csv_file')->getRealPath();
         $handle = fopen($path, 'r');
         $header = array_map('strtolower', array_map('trim', fgetcsv($handle)));
 
-        $required = ['id', 'llm_label', 'llm_confidence', 'llm_reasoning'];
+        // Accept data_id (current format) or id (legacy format)
+        $idCol = in_array('data_id', $header) ? 'data_id' : (in_array('id', $header) ? 'id' : null);
+        if (! $idCol) {
+            fclose($handle);
+            return back()->withErrors(['csv_file' => 'CSV must have a data_id (or id) column.']);
+        }
+
+        $required = [$idCol, 'llm_label', 'llm_confidence', 'llm_reasoning'];
         foreach ($required as $col) {
             if (! in_array($col, $header)) {
                 fclose($handle);
@@ -72,10 +84,13 @@ class Phase2Controller extends Controller
             }
         }
 
-        $idIdx         = array_search('id', $header);
+        $idIdx         = array_search($idCol, $header);
         $labelIdx      = array_search('llm_label', $header);
         $confidenceIdx = array_search('llm_confidence', $header);
         $reasoningIdx  = array_search('llm_reasoning', $header);
+        // phase3_group column: present in the Groq/Jupyter output CSV
+        // Values: 'llm_flagged' | 'normal_sample_10pct'
+        $groupIdx = array_search('phase3_group', $header);
 
         $rows = [];
         while (($line = fgetcsv($handle)) !== false) {
@@ -86,11 +101,19 @@ class Phase2Controller extends Controller
             if ($dataId === '') {
                 continue;
             }
+
+            $rawLabel = trim($line[$labelIdx]);
+            // Normalise multi-label values (e.g. "Depresi|Cemas") — treat as flagged,
+            // store the first component as the canonical llm_label.
+            $normalised = $this->normaliseLlmLabel($rawLabel);
+
             $rows[$dataId] = [
-                'data_id'    => $dataId,
-                'llm_label'  => trim($line[$labelIdx]),
-                'confidence' => is_numeric(trim($line[$confidenceIdx])) ? (float) trim($line[$confidenceIdx]) : null,
-                'reasoning'  => trim($line[$reasoningIdx]) ?: null,
+                'data_id'       => $dataId,
+                'llm_label'     => $normalised,
+                'confidence'    => is_numeric(trim($line[$confidenceIdx])) ? (float) trim($line[$confidenceIdx]) : null,
+                'reasoning'     => trim($line[$reasoningIdx]) ?: null,
+                // phase3_group: if column is present use it, else null (will fall back to random sampling)
+                'phase3_group'  => $groupIdx !== false ? strtolower(trim($line[$groupIdx])) : null,
             ];
         }
         fclose($handle);
@@ -101,7 +124,7 @@ class Phase2Controller extends Controller
 
         // Map each data_id to its Phase 1 package(s)
         // A data_id can appear in multiple Phase 1 packages — we create one run per package
-        $dataIds = array_keys($rows);
+        $dataIds    = array_keys($rows);
         $packageMap = PackageData::whereIn('data_id', $dataIds)
             ->join('packages', 'packages.id', '=', 'package_data.package_id')
             ->whereNull('packages.type')   // Phase 1 packages only
@@ -121,24 +144,23 @@ class Phase2Controller extends Controller
             foreach ($packageMap as $packageId => $packageRows) {
                 // Build the subset of CSV rows for this package
                 $packageDataIds = $packageRows->pluck('data_id')->flip();
-                $subset         = array_filter($rows, fn ($r) => $packageDataIds->has($r['data_id']));
+                $subset         = array_values(array_filter($rows, fn ($r) => $packageDataIds->has($r['data_id'])));
 
-                // Count Phase 1 non-normal items from actual annotations
-                // (more reliable than counting package items absent from the CSV)
                 $totalNonNormal = $this->nonNormalDataIdsForPackage($packageId)->count();
 
-                // QC sample: 10% random of Normal-labeled rows
-                $subsetValues  = array_values($subset);
-                $normalIndices = array_keys(array_filter($subsetValues, fn ($r) => strtolower($r['llm_label']) === 'normal'));
+                // Determine whether the CSV already carries phase3_group assignments.
+                // If even one row has it, we trust the CSV completely; otherwise we fall
+                // back to random 10 % sampling of LLM-confirmed Normal rows.
+                $hasGroupColumn = collect($subset)->contains(fn ($r) => $r['phase3_group'] !== null);
+
+                // Build QC index when falling back to random sampling
                 $qcActualIndices = [];
-                if (! empty($normalIndices)) {
-                    $qcCount   = max(1, (int) round(count($normalIndices) * 0.1));
-                    $picked    = (array) array_rand($normalIndices, min($qcCount, count($normalIndices)));
-                    $pickedSet = array_flip($picked);
-                    foreach (array_values($normalIndices) as $i => $rowIdx) {
-                        if (isset($pickedSet[$i])) {
-                            $qcActualIndices[$rowIdx] = true;
-                        }
+                if (! $hasGroupColumn) {
+                    $normalIndices = array_keys(array_filter($subset, fn ($r) => strtolower($r['llm_label']) === 'normal'));
+                    if (! empty($normalIndices)) {
+                        $qcCount   = max(1, (int) round(count($normalIndices) * 0.1));
+                        $picked    = (array) array_rand($normalIndices, min($qcCount, count($normalIndices)));
+                        $qcActualIndices = array_flip($picked);
                     }
                 }
 
@@ -153,9 +175,14 @@ class Phase2Controller extends Controller
                 $qcSampleCount = 0;
                 $inserts       = [];
 
-                foreach ($subsetValues as $idx => $row) {
-                    $flagged    = strtolower($row['llm_label']) !== 'normal';
-                    $inQcSample = isset($qcActualIndices[$idx]);
+                foreach ($subset as $idx => $row) {
+                    $flagged = strtolower($row['llm_label']) !== 'normal';
+
+                    if ($hasGroupColumn) {
+                        $inQcSample = $row['phase3_group'] === 'normal_sample_10pct';
+                    } else {
+                        $inQcSample = isset($qcActualIndices[$idx]);
+                    }
 
                     if (! $flagged) $totalNormal++;
                     if ($flagged)   $flaggedCount++;
@@ -394,6 +421,29 @@ class Phase2Controller extends Controller
 
         return redirect()->route('phase2.show', $run->id)
             ->with('success', "Synced {$nonNormalDataIds->count()} Phase 1 non-normal items into the Phase 3 package.");
+    }
+
+    /**
+     * Normalise raw LLM labels to a single canonical value.
+     *
+     * The Groq/Jupyter output sometimes produces multi-label strings like
+     * "Depresi|Cemas" or uses the Indonesian form "Cemas" (instead of "Ansietas").
+     * We store the first component so the value fits in a single VARCHAR column.
+     * Multi-label rows are always treated as flagged (non-Normal).
+     */
+    private function normaliseLlmLabel(string $raw): string
+    {
+        // Take first component when pipe-separated
+        $first = trim(explode('|', $raw)[0]);
+
+        // Map Indonesian variants to canonical form
+        return match (strtolower($first)) {
+            'cemas'   => 'Ansietas',
+            'normal'  => 'Normal',
+            'depresi' => 'Depresi',
+            'stres'   => 'Stres',
+            default   => $first ?: $raw,
+        };
     }
 
     /**
