@@ -114,8 +114,18 @@
 
     {{-- Runs table --}}
     <div class="card">
-        <div class="card-header">
+        <div class="card-header d-flex align-items-center justify-content-between">
             <h5 class="mb-0">Screening Run History</h5>
+            @php $pendingPhase3 = $runs->where('can_create_phase3', true)->where('phase3_package', null)->count(); @endphp
+            @if($pendingPhase3 > 0)
+                <form action="{{ route('phase2.createAllPhase3') }}" method="POST"
+                      onsubmit="return confirm('Create Phase 3 packages for all {{ $pendingPhase3 }} eligible run(s)? Annotators will be notified.')">
+                    @csrf
+                    <button type="submit" class="btn btn-primary btn-sm">
+                        <i class="ti ti-packages me-1"></i>Create All Phase 3 ({{ $pendingPhase3 }})
+                    </button>
+                </form>
+            @endif
         </div>
         <div class="card-body p-0">
             @if($runs->isEmpty())

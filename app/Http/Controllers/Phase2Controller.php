@@ -426,6 +426,69 @@ class Phase2Controller extends Controller
             ->with('success', 'Phase 3 package created and annotators notified.');
     }
 
+    public function createAllPhase3()
+    {
+        $eligible = Phase2Run::with('sourcePackage:id,name')
+            ->whereNull('phase3_package_id')
+            ->get()
+            ->filter(fn (Phase2Run $run) => $run->canCreatePhase3());
+
+        if ($eligible->isEmpty()) {
+            return redirect()->route('phase2.index')
+                ->with('success', 'No eligible runs found — all completed runs already have a Phase 3 package.');
+        }
+
+        $created = 0;
+
+        foreach ($eligible as $run) {
+            $sourcePackage = $run->sourcePackage;
+
+            DB::transaction(function () use ($run, $sourcePackage) {
+                $phase3Package = Package::create([
+                    'name' => 'Phase 3 — ' . $sourcePackage->name,
+                    'type' => 'phase3',
+                ]);
+
+                $flaggedDataIds   = AiScreening::where('phase2_run_id', $run->id)->where('flagged', true)->pluck('data_id');
+                $qcDataIds        = AiScreening::where('phase2_run_id', $run->id)->where('in_qc_sample', true)->pluck('data_id');
+                $nonNormalDataIds = $this->nonNormalDataIdsForRun($run);
+
+                $allDataIds = $flaggedDataIds->merge($qcDataIds)->merge($nonNormalDataIds)->unique()->values();
+
+                collect($allDataIds->map(fn ($dataId) => [
+                    'package_id' => $phase3Package->id,
+                    'data_id'    => $dataId,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ])->all())->chunk(500)->each(fn ($chunk) => PackageData::insertOrIgnore($chunk->all()));
+
+                $annotatorIds = UserPackage::where('package_id', $run->source_package_id)->pluck('user_id');
+
+                if ($annotatorIds->isNotEmpty()) {
+                    collect($annotatorIds->map(fn ($userId) => [
+                        'user_id'    => $userId,
+                        'package_id' => $phase3Package->id,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ])->all())->chunk(500)->each(fn ($chunk) => UserPackage::insertOrIgnore($chunk->all()));
+
+                    $this->notificationService->sendToUsers(
+                        $annotatorIds->all(),
+                        "Phase 3 re-annotation package \"{$phase3Package->name}\" has been created and assigned to you.",
+                        'phase3_assigned'
+                    );
+                }
+
+                $run->update(['phase3_package_id' => $phase3Package->id]);
+            });
+
+            $created++;
+        }
+
+        return redirect()->route('phase2.index')
+            ->with('success', "Created {$created} Phase 3 package(s) successfully.");
+    }
+
     /**
      * Add any Phase 1 non-normal items that are missing from an existing Phase 3 package.
      * Needed when Phase 3 was created before this annotation-based detection was in place.
