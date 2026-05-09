@@ -49,6 +49,9 @@ Route::middleware('auth')->group(function () {
         Route::post('phase2/create-all-phase3', [\App\Http\Controllers\Phase2Controller::class, 'createAllPhase3'])->name('phase2.createAllPhase3');
         Route::post('phase2/{run}/sync-non-normal', [\App\Http\Controllers\Phase2Controller::class, 'syncNonNormalToPhase3'])->name('phase2.syncNonNormal');
 
+        // Phase 3 — Insights Dashboard
+        Route::get('phase3/insights', [\App\Http\Controllers\Phase3InsightsController::class, 'index'])->name('phase3.insights');
+
         Route::resource('data', \App\Http\Controllers\DataController::class);
         Route::resource('users', \App\Http\Controllers\UserController::class);
         Route::resource('categories', \App\Http\Controllers\CategoryController::class);

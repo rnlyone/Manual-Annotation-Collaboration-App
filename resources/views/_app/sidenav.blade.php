@@ -66,6 +66,13 @@
                 <div data-i18n="Phase 2 Screening">Phase 2 Screening</div>
             </a>
         </li>
+        <!-- Phase 3 — Insights -->
+        <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'phase3.insights' ? 'active' : ''}}">
+            <a href="{{ route('phase3.insights') }}" class="menu-link">
+                <i class="menu-icon tf-icons ti ti-chart-dots"></i>
+                <div data-i18n="Phase 3 Insights">Phase 3 Insights</div>
+            </a>
+        </li>
         <!-- Reports -->
         <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['reports.working', 'reports.package-export']) ? 'active open' : ''}}">
             <a href="javascript:void(0);" class="menu-link menu-toggle">
