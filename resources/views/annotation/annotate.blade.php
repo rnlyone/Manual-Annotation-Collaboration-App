@@ -126,6 +126,23 @@
 						<span class="badge bg-label-primary"><i class="bx bx-package me-1"></i>Package #{{ $workbenchPackage->id ?? '-' }}</span>
 						@if($isSessionReview)
 							<div><span class="badge bg-label-info mt-2">Session Review Mode</span></div>
+						@elseif(isset($remainingForUser))
+							<div class="mt-1">
+								@if($remainingForUser > 0)
+									<span class="badge bg-label-warning">
+										<i class="bx bx-time-five me-1"></i>{{ number_format($remainingForUser) }} remaining
+									</span>
+								@else
+									<span class="badge bg-label-success">
+										<i class="bx bx-check-circle me-1"></i>All caught up!
+									</span>
+								@endif
+								@if(isset($totalItems))
+									<div class="small text-muted mt-1">
+										{{ number_format($totalItems - $remainingForUser) }} / {{ number_format($totalItems) }} done
+									</div>
+								@endif
+							</div>
 						@endif
 						<div class="small annotation-status" id="workItemMeta"></div>
 					</div>
@@ -420,6 +437,11 @@
 					...item,
 					category_ids: toCategoryArray(item.category_ids),
 				});
+				// Reserve this specific item on the server so saveSelection passes the check
+				// and the queue cursor stays correct when the user jumps back to the forward position.
+				if (config.fetchUrl) {
+					$.get(config.fetchUrl, { data_id: item.data_id });
+				}
 			}
 		};
 

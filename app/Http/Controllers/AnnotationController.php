@@ -57,34 +57,31 @@ class AnnotationController extends Controller
                     ->groupBy('package_data.package_id')
                     ->pluck('total', 'package_data.package_id');
 
-                // Phase 3: count items that have >= 2 annotations scoped to that package (annotated_at = package_id)
+                // Phase 3: count items that have >= 1 annotation scoped to that package (annotated_at = package_id)
                 $phase3PackageIds = Package::whereIn('id', $assignedPackageIds)
                     ->where('type', 'phase3')
                     ->pluck('id');
 
-                $phase3FullyAnnotatedCounts = collect();
+                $phase3AnnotatedCounts = collect();
                 // Phase 3 per-user remaining: items the current user can still annotate
                 // (user has no annotation for this data_id AND item has < 2 phase3 annotations)
                 $phase3UserRemainingCounts = collect();
                 if ($phase3PackageIds->isNotEmpty()) {
-                    $phase3FullyAnnotatedCounts = DB::table('package_data as pd')
-                        ->select('pd.package_id', DB::raw('COUNT(*) as total'))
-                        ->whereIn('pd.package_id', $phase3PackageIds)
-                        ->whereRaw(
-                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.annotated_at = pd.package_id) >= 2'
-                        )
-                        ->groupBy('pd.package_id')
-                        ->pluck('total', 'pd.package_id');
+                    // Overall progress: distinct items touched by any annotator in this Phase 3 package
+                    $phase3AnnotatedCounts = Annotation::query()
+                        ->select('package_data.package_id', DB::raw('COUNT(DISTINCT annotations.data_id) as total'))
+                        ->join('package_data', 'package_data.data_id', '=', 'annotations.data_id')
+                        ->whereIn('package_data.package_id', $phase3PackageIds)
+                        ->whereColumn('annotations.annotated_at', 'package_data.package_id')
+                        ->groupBy('package_data.package_id')
+                        ->pluck('total', 'package_data.package_id');
 
                     $phase3UserRemainingCounts = DB::table('package_data as pd')
                         ->select('pd.package_id', DB::raw('COUNT(*) as remaining'))
                         ->whereIn('pd.package_id', $phase3PackageIds)
                         ->whereRaw(
-                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.user_id = ?) = 0',
+                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.user_id = ? AND annotations.annotated_at = pd.package_id) = 0',
                             [$user->id]
-                        )
-                        ->whereRaw(
-                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.annotated_at = pd.package_id) < 2'
                         )
                         ->groupBy('pd.package_id')
                         ->pluck('remaining', 'pd.package_id');
@@ -93,19 +90,19 @@ class AnnotationController extends Controller
                 $assignedPackages = Package::whereIn('id', $assignedPackageIds)
                     ->orderBy('name')
                     ->get()
-                    ->map(function (Package $package) use ($dataCounts, $userAnnotationCounts, $overallAnnotationCounts, $phase3FullyAnnotatedCounts, $phase3UserRemainingCounts) {
+                    ->map(function (Package $package) use ($dataCounts, $userAnnotationCounts, $overallAnnotationCounts, $phase3AnnotatedCounts, $phase3UserRemainingCounts) {
                         $total = (int) ($dataCounts[$package->id] ?? 0);
                         $userAnnotated = (int) ($userAnnotationCounts[$package->id] ?? 0);
 
-                        // Phase 3: overall progress = items fully done (>= 2 annotations), same for all users
+                        // Phase 3: overall progress = distinct items annotated by anyone (annotated_at = package_id)
                         // Phase 1: overall progress = items with at least 1 annotation
                         $overallAnnotated = $package->type === 'phase3'
-                            ? (int) ($phase3FullyAnnotatedCounts[$package->id] ?? 0)
+                            ? (int) ($phase3AnnotatedCounts[$package->id] ?? 0)
                             : (int) ($overallAnnotationCounts[$package->id] ?? 0);
 
                         $overallProgress = $total > 0 ? round(($overallAnnotated / $total) * 100, 1) : 0;
 
-                        // Phase 3: remaining = items this user can still annotate (not done by them, not fully annotated)
+                        // Phase 3: remaining = items this user hasn't annotated in this Phase 3 context yet
                         // Phase 1: remaining = items not yet annotated by anyone
                         $remaining = $package->type === 'phase3'
                             ? (int) ($phase3UserRemainingCounts[$package->id] ?? 0)
@@ -166,6 +163,26 @@ class AnnotationController extends Controller
             $this->releaseReservedWorkItem($user->id);
         }
 
+        // Compute remaining items for this user/package to show in the workbench header.
+        $totalItems = PackageData::where('package_id', $package->id)->count();
+
+        if ($package->type === 'phase3') {
+            $remainingForUser = (int) DB::table('package_data as pd')
+                ->where('pd.package_id', $package->id)
+                ->whereRaw(
+                    '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.user_id = ? AND annotations.annotated_at = pd.package_id) = 0',
+                    [$user->id]
+                )
+                ->count();
+        } else {
+            $overallAnnotated = (int) Annotation::query()
+                ->join('package_data', 'package_data.data_id', '=', 'annotations.data_id')
+                ->where('package_data.package_id', $package->id)
+                ->distinct('annotations.data_id')
+                ->count('annotations.data_id');
+            $remainingForUser = max(0, $totalItems - $overallAnnotated);
+        }
+
         return view('_app.app', [
             'content' => 'annotation.annotate',
             'headerdata' => ['pagetitle' => 'Annotate'],
@@ -174,6 +191,8 @@ class AnnotationController extends Controller
             'categories' => $categories,
             'initialWorkItem' => $initialItem,
             'sessionLog' => $sessionLog,
+            'remainingForUser' => $remainingForUser,
+            'totalItems' => $totalItems,
         ]);
     }
 
@@ -673,6 +692,20 @@ class AnnotationController extends Controller
         abort_unless($user, 403);
         $this->ensurePackageAccess($package, $user->id);
 
+        // When a specific data_id is provided (e.g. navigating back via the annotation map),
+        // just reserve that item and return its data without advancing the queue.
+        $specificDataId = $request->input('data_id');
+        if ($specificDataId) {
+            $record = $this->packageDataQuery($package)
+                ->where('package_data.data_id', $specificDataId)
+                ->first();
+            $item = $record ? $this->formatWorkItem($record, $user->id) : null;
+            if ($item) {
+                $this->reserveWorkItem($user->id, $package, (string) $item['data_id']);
+            }
+            return response()->json(['data' => $item]);
+        }
+
         $direction = $request->input('direction', 'next');
         $cursor = $request->input('cursor');
         $cursorId = $cursor ? (int) $cursor : null;
@@ -702,7 +735,14 @@ class AnnotationController extends Controller
             'category_ids.*' => 'integer|exists:categories,id',
         ]);
 
-        if (! $this->isDataReservedByUser($user->id, $package->id, $validated['data_id'])) {
+        // Corrections to existing annotations (map navigation, review mode) bypass the reservation
+        // check — a user can always update their own annotation. Reservation is only enforced for
+        // brand-new items to prevent race conditions between concurrent annotators.
+        $isCorrection = Annotation::where('data_id', $validated['data_id'])
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $isCorrection && ! $this->isDataReservedByUser($user->id, $package->id, $validated['data_id'])) {
             return response()->json([
                 'message' => 'This data is no longer reserved for your session. Please reload to continue annotating.',
             ], 409);
