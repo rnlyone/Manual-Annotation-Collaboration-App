@@ -63,9 +63,10 @@ class AnnotationController extends Controller
                     ->pluck('id');
 
                 $phase3AnnotatedCounts = collect();
-                // Phase 3 per-user remaining: items the current user can still annotate
-                // (user has no annotation for this data_id AND item has < 2 phase3 annotations)
-                $phase3UserRemainingCounts = collect();
+                // Phase 3 overall remaining: items with < 2 Phase 3 annotations (team hasn't finished)
+                $phase3OverallRemainingCounts = collect();
+                // Phase 3 your remaining: items the user hasn't annotated AND still need annotation (< 2 done)
+                $phase3YourRemainingCounts = collect();
                 if ($phase3PackageIds->isNotEmpty()) {
                     // Overall progress: distinct items touched by any annotator in this Phase 3 package
                     $phase3AnnotatedCounts = Annotation::query()
@@ -76,12 +77,28 @@ class AnnotationController extends Controller
                         ->groupBy('package_data.package_id')
                         ->pluck('total', 'package_data.package_id');
 
-                    $phase3UserRemainingCounts = DB::table('package_data as pd')
+                    // Overall remaining: items where fewer than 2 Phase 3 annotations exist
+                    $phase3OverallRemainingCounts = DB::table('package_data as pd')
                         ->select('pd.package_id', DB::raw('COUNT(*) as remaining'))
                         ->whereIn('pd.package_id', $phase3PackageIds)
                         ->whereRaw(
-                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.user_id = ? AND annotations.annotated_at = pd.package_id) = 0',
+                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.annotated_at = pd.package_id) < 2'
+                        )
+                        ->groupBy('pd.package_id')
+                        ->pluck('remaining', 'pd.package_id');
+
+                    // Your remaining: mirrors unannotatedPackageDataQuery exactly —
+                    // items where: user has NO annotation for this data_id in ANY package,
+                    // AND fewer than 2 Phase 3 annotations exist for this package
+                    $phase3YourRemainingCounts = DB::table('package_data as pd')
+                        ->select('pd.package_id', DB::raw('COUNT(*) as remaining'))
+                        ->whereIn('pd.package_id', $phase3PackageIds)
+                        ->whereRaw(
+                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.user_id = ?) = 0',
                             [$user->id]
+                        )
+                        ->whereRaw(
+                            '(SELECT COUNT(*) FROM annotations WHERE annotations.data_id = pd.data_id AND annotations.annotated_at = pd.package_id) < 2'
                         )
                         ->groupBy('pd.package_id')
                         ->pluck('remaining', 'pd.package_id');
@@ -90,7 +107,7 @@ class AnnotationController extends Controller
                 $assignedPackages = Package::whereIn('id', $assignedPackageIds)
                     ->orderBy('name')
                     ->get()
-                    ->map(function (Package $package) use ($dataCounts, $userAnnotationCounts, $overallAnnotationCounts, $phase3AnnotatedCounts, $phase3UserRemainingCounts) {
+                    ->map(function (Package $package) use ($dataCounts, $userAnnotationCounts, $overallAnnotationCounts, $phase3AnnotatedCounts, $phase3OverallRemainingCounts, $phase3YourRemainingCounts) {
                         $total = (int) ($dataCounts[$package->id] ?? 0);
                         $userAnnotated = (int) ($userAnnotationCounts[$package->id] ?? 0);
 
@@ -102,11 +119,16 @@ class AnnotationController extends Controller
 
                         $overallProgress = $total > 0 ? round(($overallAnnotated / $total) * 100, 1) : 0;
 
-                        // Phase 3: remaining = items this user hasn't annotated in this Phase 3 context yet
-                        // Phase 1: remaining = items not yet annotated by anyone
+                        // Phase 3: overall remaining = items with < 2 Phase 3 annotations (team hasn't finished)
+                        // Phase 1: overall remaining = items not yet annotated by anyone
                         $remaining = $package->type === 'phase3'
-                            ? (int) ($phase3UserRemainingCounts[$package->id] ?? 0)
+                            ? (int) ($phase3OverallRemainingCounts[$package->id] ?? 0)
                             : max($total - $overallAnnotated, 0);
+
+                        // Phase 3 only: items this specific user hasn't annotated AND still need annotation
+                        $yourRemaining = $package->type === 'phase3'
+                            ? (int) ($phase3YourRemainingCounts[$package->id] ?? 0)
+                            : null;
 
                         return [
                             'id' => $package->id,
@@ -116,6 +138,7 @@ class AnnotationController extends Controller
                             'user_annotated' => $userAnnotated,
                             'overall_annotated' => $overallAnnotated,
                             'remaining' => $remaining,
+                            'your_remaining' => $yourRemaining,
                             'overall_progress' => $overallProgress,
                         ];
                     });

@@ -36,7 +36,8 @@
                                     <th>Package</th>
                                     <th style="width: 140px;">Assigned Data</th>
                                     <th style="width: 180px;">Your Annotations</th>
-                                    <th style="width: 180px;">Remaining</th>
+                                    <th style="width: 160px;">Remaining</th>
+                                    <th style="width: 160px;">Your Remaining</th>
                                     <th style="width: 220px;">Overall Progress</th>
                                     <th style="width: 150px;">Action</th>
                                 </tr>
@@ -56,6 +57,18 @@
                                         <td>{{ number_format($package['data_total']) }}</td>
                                         <td>{{ number_format($package['user_annotated']) }}</td>
                                         <td>{{ number_format(max($package['remaining'], 0)) }}</td>
+                                        <td>
+                                            @if(($package['type'] ?? null) === 'phase3')
+                                                @php $yr = (int) ($package['your_remaining'] ?? 0); @endphp
+                                                @if($yr === 0)
+                                                    <span class="badge bg-label-success">Done</span>
+                                                @else
+                                                    <span class="text-warning fw-semibold">{{ number_format($yr) }}</span>
+                                                @endif
+                                            @else
+                                                <span class="text-muted small">—</span>
+                                            @endif
+                                        </td>
                                         <td>
                                             @php
                                                 $progressPercent = number_format($package['overall_progress'], 1);
@@ -84,7 +97,7 @@
                                     </tr>
                                 @empty
                                     <tr>
-                                        <td colspan="6" class="text-center text-muted py-4">
+                                        <td colspan="8" class="text-center text-muted py-4">
                                             You do not have any packages assigned yet.
                                         </td>
                                     </tr>

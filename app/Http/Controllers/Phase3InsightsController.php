@@ -70,14 +70,42 @@ class Phase3InsightsController extends Controller
             fn ($s) => $s->data_id . '|' . $s->phase3_package_id
         );
 
-        // ── Annotation progress buckets (0 / 1 / 2 / 3+) ────────────────────
+        // ── Annotation progress buckets ───────────────────────────────────────
+        //
+        // Count DISTINCT human annotators per Phase 3 item, combining:
+        //   Phase 1 annotations (annotated_at = source_package_id)
+        //   Phase 3 annotations (annotated_at = phase3_package_id)
+        //
+        //   1 annotator → Phase 1 only (not yet Phase 3 reviewed)
+        //   2 annotators → Phase 3 ongoing (1 Phase 3 reviewer)
+        //   3 annotators → Phase 3 complete (2 Phase 3 reviewers)
 
-        $progressBuckets = [0 => 0, 1 => 0, 2 => 0, 3 => 0];
+        $sourcePackageIds  = $runs->pluck('source_package_id');
+        $phase3ToSource    = $runs->pluck('source_package_id', 'phase3_package_id');
+        $phase3DataIds     = $allPhase3Items->pluck('data_id')->unique();
+
+        // Load Phase 1 annotations (same data_ids, but annotated_at = source package)
+        $phase1Annotations = Annotation::whereIn('annotated_at', $sourcePackageIds)
+            ->whereIn('data_id', $phase3DataIds)
+            ->get(['data_id', 'annotated_at', 'user_id'])
+            ->groupBy(fn ($a) => $a->data_id . '|' . $a->annotated_at);
+
+        $progressBuckets = [1 => 0, 2 => 0, 3 => 0];
         foreach ($allPhase3Items as $item) {
-            $key    = $item->data_id . '|' . $item->package_id;
-            $count  = isset($annotsByItemKey[$key]) ? $annotsByItemKey[$key]->count() : 0;
-            $bucket = min($count, 3);
-            $progressBuckets[$bucket]++;
+            $p3Key    = $item->data_id . '|' . $item->package_id;
+            $srcPkgId = $phase3ToSource[$item->package_id] ?? null;
+            $p1Key    = $srcPkgId ? ($item->data_id . '|' . $srcPkgId) : null;
+
+            $p1Users = $p1Key && isset($phase1Annotations[$p1Key])
+                ? $phase1Annotations[$p1Key]->pluck('user_id')
+                : collect();
+
+            $p3Users = isset($annotsByItemKey[$p3Key])
+                ? $annotsByItemKey[$p3Key]->pluck('user_id')
+                : collect();
+
+            $distinctUsers = $p1Users->merge($p3Users)->unique()->count();
+            $progressBuckets[max(1, min($distinctUsers, 3))]++;
         }
 
         // ── Source breakdown ──────────────────────────────────────────────────
@@ -87,7 +115,14 @@ class Phase3InsightsController extends Controller
             $key       = $item->data_id . '|' . $item->package_id;
             $screening = $screeningsByItemKey->get($key);
 
-            if (! $screening) {
+            // Priority: Phase 1 non-normal label > LLM flagged > QC sample.
+            // An item with a non-normal Phase 1 label is in Phase 3 primarily because
+            // it was already labelled non-normal by a human — even if the LLM also
+            // flagged it. Check that condition first so those items are not swallowed
+            // by the LLM-flagged bucket.
+            $p1IsNonNormal = $screening && $screening->phase1_label && $screening->phase1_label !== 'Normal';
+
+            if (! $screening || $p1IsNonNormal) {
                 $sourceBreakdown['non_normal']++;
             } elseif ($screening->flagged) {
                 $sourceBreakdown['llm_flagged']++;

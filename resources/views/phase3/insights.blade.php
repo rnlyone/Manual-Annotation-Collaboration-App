@@ -94,11 +94,12 @@
         <div class="col-6 col-lg-3">
             <div class="card text-center h-100">
                 <div class="card-body py-4">
-                    <div class="insight-stat-value text-warning">{{ number_format($pb[0]) }}</div>
-                    <div class="insight-stat-label mt-1">Not Yet Started</div>
+                    <div class="insight-stat-value text-secondary">{{ number_format($pb[1]) }}</div>
+                    <div class="insight-stat-label mt-1">Awaiting Phase 3</div>
                     @if($totalItems > 0)
-                        <div class="small text-muted">{{ round($pb[0]/$totalItems*100,1) }}% of total</div>
+                        <div class="small text-muted">{{ round($pb[1]/$totalItems*100,1) }}% of total</div>
                     @endif
+                    <div class="small text-muted mt-1">Phase 1 only (1 annotator)</div>
                 </div>
             </div>
         </div>
@@ -127,22 +128,39 @@
         <div class="col-12 col-lg-5">
             <div class="card h-100">
                 <div class="card-header">
-                    <h6 class="mb-0"><i class="ti ti-chart-donut me-2 text-primary"></i>Annotation Progress</h6>
+                    <h6 class="mb-0"><i class="ti ti-chart-donut me-2 text-primary"></i>Human Annotator Count per Item</h6>
                 </div>
                 <div class="card-body">
                     <div class="chart-container-md">
                         <canvas id="progressDonut"></canvas>
                     </div>
-                    <div class="row g-2 mt-3 text-center">
-                        @foreach([['label'=>'0 annotations','color'=>'#ecedf1','val'=>$pb[0]], ['label'=>'1 annotation','color'=>'#ffb547','val'=>$pb[1]], ['label'=>'2 annotations','color'=>'#29ccef','val'=>$pb[2]], ['label'=>'3 annotations ✓','color'=>'#71dd37','val'=>$pb[3]]] as $bucket)
-                        <div class="col-6">
-                            <div class="d-flex align-items-center gap-2">
-                                <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:{{ $bucket['color'] }};flex-shrink:0;"></span>
-                                <span class="small text-muted">{{ $bucket['label'] }}</span>
-                                <strong class="ms-auto">{{ number_format($bucket['val']) }}</strong>
+                    @php
+                        $donuts = [
+                            ['key'=>1, 'label'=>'1 annotator',  'sub'=>'Phase 1 only — not yet reviewed in Phase 3', 'color'=>'#c0c0c8'],
+                            ['key'=>2, 'label'=>'2 annotators', 'sub'=>'Phase 3 ongoing — 1 reviewer so far',        'color'=>'#ffb547'],
+                            ['key'=>3, 'label'=>'3 annotators', 'sub'=>'Phase 3 complete — 2 reviewers done',        'color'=>'#71dd37'],
+                        ];
+                    @endphp
+                    <div class="mt-3">
+                        @foreach($donuts as $d2)
+                        <div class="d-flex align-items-start gap-2 mb-2">
+                            <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:{{ $d2['color'] }};flex-shrink:0;margin-top:3px;"></span>
+                            <div class="flex-grow-1">
+                                <div class="small fw-semibold">{{ $d2['label'] }}</div>
+                                <div class="small text-muted">{{ $d2['sub'] }}</div>
                             </div>
+                            <strong>{{ number_format($pb[$d2['key']]) }}</strong>
                         </div>
                         @endforeach
+                    </div>
+                    <div class="mt-3 pt-2 border-top">
+                        <div class="d-flex justify-content-between small text-muted">
+                            <span>Phase 3 complete</span>
+                            <strong class="text-success">{{ $totalItems > 0 ? round($pb[3]/$totalItems*100,1) : 0 }}%</strong>
+                        </div>
+                        <div class="progress mt-1" style="height:6px;">
+                            <div class="progress-bar bg-success" style="width:{{ $totalItems > 0 ? round($pb[3]/$totalItems*100,1) : 0 }}%"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -611,13 +629,14 @@
     @unless($d['empty'])
 
     // ── Progress Donut ─────────────────────────────────────────────────
+    // ── Progress Donut ─────────────────────────────────────────────────
     new Chart(document.getElementById('progressDonut'), {
         type: 'doughnut',
         data: {
-            labels: ['0 annotations', '1 annotation', '2 annotations', '3 annotations ✓'],
+            labels: ['1 annotator (Phase 1 only)', '2 annotators (Phase 3 ongoing)', '3 annotators (Phase 3 complete)'],
             datasets: [{
-                data: @json(array_values($pb)),
-                backgroundColor: ['#ecedf1', '#ffb547', '#29ccef', '#71dd37'],
+                data: @json([$pb[1], $pb[2], $pb[3]]),
+                backgroundColor: ['#c0c0c8', '#ffb547', '#71dd37'],
                 borderWidth: 0,
             }],
         },
