@@ -98,41 +98,47 @@ class Phase3InsightsController extends Controller
             }
         }
 
-        // ── Inter-Annotator Agreement (items with ≥ 3 annotations) ───────────
+        // ── Inter-Annotator Agreement (items with ≥ 2 annotations) ───────────
         //
         // Binary classification: Normal (empty category_ids) vs DAS (non-empty).
-        // Fleiss' κ for binary with k=3 raters:
-        //   P_obs = (1/N) * Σ_i  [n_das(n_das-1) + n_norm(n_norm-1)] / [k(k-1)]
-        //   p_das  = (Σ n_das) / (N * k)
-        //   P_exp  = p_das² + (1-p_das)²
-        //   κ      = (P_obs - P_exp) / (1 - P_exp)
+        // Variable-k Fleiss' κ (works for 2 or 3 raters per item):
+        //   For each item i with k_i raters:
+        //     P_i   = [n_das(n_das-1) + n_norm(n_norm-1)] / [k_i*(k_i-1)]
+        //   p_das   = Σ(n_das_i) / Σ(k_i)
+        //   P_obs   = mean(P_i)
+        //   P_exp   = p_das² + (1-p_das)²
+        //   κ       = (P_obs - P_exp) / (1 - P_exp)
 
-        $iaaStats   = ['full_das' => 0, 'full_normal' => 0, 'majority_das' => 0, 'majority_normal' => 0];
+        $iaaStats   = ['full_das' => 0, 'full_normal' => 0, 'majority_das' => 0, 'majority_normal' => 0, 'split' => 0];
         $kappaSumPi = 0.0;
-        $kappaDasVotes  = 0;
+        $kappaDasVotes   = 0;
         $kappaTotalVotes = 0;
-        $iaaTotal   = 0;
+        $iaaTotal    = 0;   // items with ≥ 2 annotations
+        $iaaTotal3   = 0;   // items with exactly ≥ 3 annotations
 
         foreach ($allPhase3Items as $item) {
             $key    = $item->data_id . '|' . $item->package_id;
             $annots = $annotsByItemKey[$key] ?? collect();
-            if ($annots->count() < 3) {
+            $ki     = $annots->count();
+            if ($ki < 2) {
                 continue;
             }
 
-            $first3      = $annots->take(3);
-            $dasVotes    = $first3->filter(fn ($a) => ! empty($a->category_ids))->count();
-            $normalVotes = 3 - $dasVotes;
+            $dasVotes    = $annots->filter(fn ($a) => ! empty($a->category_ids))->count();
+            $normalVotes = $ki - $dasVotes;
 
-            if ($dasVotes === 3)         $iaaStats['full_das']++;
-            elseif ($normalVotes === 3)  $iaaStats['full_normal']++;
-            elseif ($dasVotes >= 2)      $iaaStats['majority_das']++;
-            else                         $iaaStats['majority_normal']++;
+            if ($dasVotes === $ki)         $iaaStats['full_das']++;
+            elseif ($normalVotes === $ki)  $iaaStats['full_normal']++;
+            elseif ($ki === 2)             $iaaStats['split']++;     // 1-1 tie, only possible with 2 raters
+            elseif ($dasVotes > $ki / 2)   $iaaStats['majority_das']++;
+            else                           $iaaStats['majority_normal']++;
 
-            $kappaSumPi      += ($dasVotes * ($dasVotes - 1) + $normalVotes * ($normalVotes - 1)) / 6;
+            // Variable-k Fleiss' κ contribution
+            $kappaSumPi      += ($ki > 1) ? ($dasVotes * ($dasVotes - 1) + $normalVotes * ($normalVotes - 1)) / ($ki * ($ki - 1)) : 0;
             $kappaDasVotes   += $dasVotes;
-            $kappaTotalVotes += 3;
+            $kappaTotalVotes += $ki;
             $iaaTotal++;
+            if ($ki >= 3) $iaaTotal3++;
         }
 
         $fleissKappa      = null;
@@ -222,6 +228,61 @@ class Phase3InsightsController extends Controller
             ->map(fn ($g) => $g->count())
             ->sortDesc();
 
+        // ── LLM label vs Human label cross-tabulation ─────────────────────────
+        //
+        // For each Phase 3 item that has a screening with llm_label set AND at
+        // least one human annotation, we determine the human "majority label"
+        // (most-voted category name, or "Normal" if empty-category votes win),
+        // then tally into a matrix: llmLabel → humanLabel → count.
+
+        $llmVsHuman = [];   // [ llmLabel => [ humanLabel => count ] ]
+
+        foreach ($allPhase3Items as $item) {
+            $key       = $item->data_id . '|' . $item->package_id;
+            $screening = $screeningsByItemKey->get($key);
+            $annots    = $annotsByItemKey[$key] ?? collect();
+
+            if (! $screening || ! $screening->llm_label || $annots->isEmpty()) {
+                continue;
+            }
+
+            $llmLabel = $screening->llm_label;
+
+            // Tally human votes per category (Normal counts as its own bucket)
+            $humanVotes = ['Normal' => 0];
+            foreach ($annots as $annot) {
+                if (empty($annot->category_ids)) {
+                    $humanVotes['Normal']++;
+                } else {
+                    foreach ($annot->category_ids as $catId) {
+                        $name = $categories[$catId] ?? "Category #{$catId}";
+                        $humanVotes[$name] = ($humanVotes[$name] ?? 0) + 1;
+                    }
+                }
+            }
+
+            // Majority human label = highest vote count
+            arsort($humanVotes);
+            $majorityHumanLabel = array_key_first($humanVotes);
+
+            $llmVsHuman[$llmLabel][$majorityHumanLabel] = ($llmVsHuman[$llmLabel][$majorityHumanLabel] ?? 0) + 1;
+        }
+
+        // Sort by LLM label name; collect all human labels seen (for legend)
+        ksort($llmVsHuman);
+        $allHumanLabels = collect($llmVsHuman)
+            ->flatMap(fn ($row) => array_keys($row))
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        // Move "Normal" to the front for consistent chart ordering
+        $allHumanLabels = array_unique(array_merge(
+            in_array('Normal', $allHumanLabels) ? ['Normal'] : [],
+            array_filter($allHumanLabels, fn ($l) => $l !== 'Normal')
+        ));
+
         // ── Per-run summary table ─────────────────────────────────────────────
 
         $runSummaries = $runs->map(function ($run) use ($phase3DataIdsByPackage, $annotsByItemKey, $screeningsByItemKey) {
@@ -260,6 +321,7 @@ class Phase3InsightsController extends Controller
                 'sourceBreakdown'    => $sourceBreakdown,
                 'iaaStats'           => $iaaStats,
                 'iaaTotal'           => $iaaTotal,
+                'iaaTotal3'          => $iaaTotal3,
                 'fleissKappa'        => $fleissKappa,
                 'kappaInterpret'     => $kappaInterpret,
                 'pctFullAgreement'   => $pctFullAgreement,
@@ -272,6 +334,8 @@ class Phase3InsightsController extends Controller
                 'categoryFrequency'  => $categoryFrequency,
                 'normalAnnotCount'   => $normalAnnotCount,
                 'llmLabelCounts'     => $llmLabelCounts,
+                'llmVsHuman'         => $llmVsHuman,
+                'allHumanLabels'     => $allHumanLabels,
             ],
         ]);
     }

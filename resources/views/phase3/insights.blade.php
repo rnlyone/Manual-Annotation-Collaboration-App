@@ -13,6 +13,7 @@
 
     // IAA
     $iaaTotal  = $d['iaaTotal'] ?? 0;
+    $iaaTotal3 = $d['iaaTotal3'] ?? 0;
     $iaaStats  = $d['iaaStats'] ?? [];
 
     // LLM vs Human
@@ -22,6 +23,10 @@
     $catFreq        = $d['categoryFrequency'] ?? [];
     $normalAnnot    = $d['normalAnnotCount'] ?? 0;
     $llmLabelCounts = $d['llmLabelCounts'] ?? collect();
+
+    // LLM vs Human label matrix
+    $llmVsHuman      = $d['llmVsHuman'] ?? [];
+    $allHumanLabels  = $d['allHumanLabels'] ?? [];
 
     // Totals helper
     $totalItems = $d['totalItems'] ?? 0;
@@ -218,19 +223,30 @@
             <div class="card h-100">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="ti ti-users me-2 text-success"></i>Inter-Annotator Agreement</h6>
-                    <small class="text-muted">{{ number_format($iaaTotal) }} items with 3 annotations</small>
+                    <div class="d-flex gap-2 align-items-center">
+                        @if($iaaTotal3 > 0)
+                            <span class="badge bg-label-success">{{ number_format($iaaTotal3) }} items × 3 raters</span>
+                        @endif
+                        <small class="text-muted">{{ number_format($iaaTotal) }} items with ≥ 2 annotations</small>
+                    </div>
                 </div>
                 <div class="card-body">
                     @if($iaaTotal === 0)
                         <div class="text-center text-muted py-4">
                             <i class="ti ti-clock fs-1 d-block mb-2"></i>
-                            Waiting for items to reach 3 annotations.
+                            <p class="mb-1">Waiting for items to receive at least 2 annotations.</p>
+                            <small>IAA requires a data item to be annotated by ≥ 2 different annotators. Fleiss' κ will appear once enough items are covered.</small>
                         </div>
                     @else
                         {{-- Fleiss' Kappa bar --}}
-                        <div class="mb-4">
+                        <div class="mb-3">
                             <div class="d-flex justify-content-between mb-1">
-                                <span class="small fw-semibold">Fleiss' Kappa (κ)</span>
+                                <span class="small fw-semibold">
+                                    Fleiss' Kappa (κ)
+                                    @if($iaaTotal3 < $iaaTotal)
+                                        <span class="badge bg-label-warning ms-1" title="{{ $iaaTotal - $iaaTotal3 }} items have only 2 annotations — preliminary estimate">preliminary</span>
+                                    @endif
+                                </span>
                                 <span class="badge bg-label-{{ $kappaColor }}">{{ $d['fleissKappa'] }} — {{ $kappaLabel }}</span>
                             </div>
                             <div class="progress" style="height:10px;">
@@ -238,21 +254,25 @@
                                 <div class="progress-bar bg-{{ $kappaColor }}" style="width:{{ $kappaPct }}%"></div>
                             </div>
                             <div class="d-flex justify-content-between mt-1">
-                                <small class="text-muted">−1</small>
+                                <small class="text-muted">−1 (no agreement)</small>
                                 <small class="text-muted">0</small>
-                                <small class="text-muted">+1</small>
+                                <small class="text-muted">+1 (perfect)</small>
                             </div>
                         </div>
 
                         {{-- Agreement stacked bar --}}
-                        <p class="small fw-semibold mb-2">Agreement Breakdown ({{ number_format($iaaTotal) }} items)</p>
+                        <p class="small fw-semibold mb-2">Agreement Breakdown ({{ number_format($iaaTotal) }} items with ≥ 2 annotations)</p>
                         <div class="agreement-bar d-flex mb-2">
-                            @foreach([
-                                ['val'=>$iaaStats['full_das'],    'color'=>'bg-danger',  'label'=>'Full DAS'],
-                                ['val'=>$iaaStats['majority_das'],'color'=>'bg-warning', 'label'=>'Majority DAS'],
-                                ['val'=>$iaaStats['majority_normal'],'color'=>'bg-info', 'label'=>'Majority Normal'],
-                                ['val'=>$iaaStats['full_normal'], 'color'=>'bg-success', 'label'=>'Full Normal'],
-                            ] as $seg)
+                            @php
+                                $segDefs = [
+                                    ['val'=>$iaaStats['full_das'],        'color'=>'bg-danger',          'label'=>'Full DAS'],
+                                    ['val'=>$iaaStats['majority_das'],    'color'=>'bg-warning',         'label'=>'Majority DAS'],
+                                    ['val'=>$iaaStats['split'] ?? 0,      'color'=>'bg-secondary',       'label'=>'Split (1-1)'],
+                                    ['val'=>$iaaStats['majority_normal'], 'color'=>'bg-info',            'label'=>'Majority Normal'],
+                                    ['val'=>$iaaStats['full_normal'],     'color'=>'bg-success',         'label'=>'Full Normal'],
+                                ];
+                            @endphp
+                            @foreach($segDefs as $seg)
                             @if($seg['val'] > 0)
                                 @php $segPct = round($seg['val']/$iaaTotal*100,1); @endphp
                                 <div class="{{ $seg['color'] }}" style="width:{{ $segPct }}%" title="{{ $seg['label'] }}: {{ number_format($seg['val']) }} ({{ $segPct }}%)"></div>
@@ -261,31 +281,44 @@
                         </div>
                         <div class="row g-2 small">
                             @foreach([
-                                ['val'=>$iaaStats['full_das'],     'color'=>'danger',  'label'=>'Full DAS (all 3 agree)'],
-                                ['val'=>$iaaStats['majority_das'], 'color'=>'warning', 'label'=>'Majority DAS (2 of 3)'],
-                                ['val'=>$iaaStats['majority_normal'],'color'=>'info',  'label'=>'Majority Normal (2 of 3)'],
-                                ['val'=>$iaaStats['full_normal'],  'color'=>'success', 'label'=>'Full Normal (all 3 agree)'],
+                                ['val'=>$iaaStats['full_das'],        'color'=>'danger',    'label'=>'Full DAS (unanimous)'],
+                                ['val'=>$iaaStats['majority_das'],    'color'=>'warning',   'label'=>'Majority DAS (2 of 3)'],
+                                ['val'=>$iaaStats['split'] ?? 0,      'color'=>'secondary', 'label'=>'Split 1-1 (2 raters)'],
+                                ['val'=>$iaaStats['majority_normal'], 'color'=>'info',      'label'=>'Majority Normal (2 of 3)'],
+                                ['val'=>$iaaStats['full_normal'],     'color'=>'success',   'label'=>'Full Normal (unanimous)'],
                             ] as $seg)
+                            @if($seg['val'] > 0)
                             <div class="col-6 d-flex align-items-center gap-1">
                                 <span class="badge bg-{{ $seg['color'] }}" style="width:10px;height:10px;padding:0;border-radius:50%;"></span>
                                 <span class="text-muted">{{ $seg['label'] }}</span>
                                 <strong class="ms-auto">{{ number_format($seg['val']) }}</strong>
                             </div>
+                            @endif
                             @endforeach
                         </div>
-                        <div class="mt-3 pt-3 border-top d-flex gap-4">
+                        <div class="mt-3 pt-3 border-top d-flex gap-4 flex-wrap">
                             <div class="text-center">
                                 <div class="fw-bold text-success">{{ $d['pctFullAgreement'] }}%</div>
                                 <div class="small text-muted">Full Agreement</div>
                             </div>
+                            @if($iaaTotal > 0)
                             <div class="text-center">
-                                <div class="fw-bold text-primary">{{ $iaaTotal > 0 ? round(100-$d['pctFullAgreement'],1) : 0 }}%</div>
-                                <div class="small text-muted">Majority Agreement</div>
-                            </div>
-                            <div class="text-center">
-                                <div class="fw-bold text-danger">{{ $iaaTotal > 0 ? round(($iaaStats['full_das']+$iaaStats['majority_das'])/$iaaTotal*100,1) : 0 }}%</div>
+                                <div class="fw-bold text-danger">{{ round(($iaaStats['full_das'] + $iaaStats['majority_das'])/$iaaTotal*100,1) }}%</div>
                                 <div class="small text-muted">DAS Majority</div>
                             </div>
+                            @if(($iaaStats['split'] ?? 0) > 0)
+                            <div class="text-center">
+                                <div class="fw-bold text-secondary">{{ round($iaaStats['split']/$iaaTotal*100,1) }}%</div>
+                                <div class="small text-muted">Disputed (2-rater split)</div>
+                            </div>
+                            @endif
+                            @if($iaaTotal3 > 0)
+                            <div class="text-center">
+                                <div class="fw-bold text-primary">{{ number_format($iaaTotal3) }}</div>
+                                <div class="small text-muted">Items × 3 raters</div>
+                            </div>
+                            @endif
+                            @endif
                         </div>
                     @endif
                 </div>
@@ -428,6 +461,92 @@
             </div>
         </div>
     </div>
+
+    {{-- ── LLM LABEL vs HUMAN LABEL MATRIX ─────────────────────────────────── --}}
+    @if(!empty($llmVsHuman))
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h6 class="mb-0"><i class="ti ti-arrows-exchange me-2 text-danger"></i>LLM Label vs Human Majority Label</h6>
+            <small class="text-muted">Each bar = one LLM-predicted label · segments = what humans labeled those items</small>
+        </div>
+        <div class="card-body">
+            <div style="position:relative; height:{{ max(180, count($llmVsHuman) * 52) }}px;">
+                <canvas id="llmVsHumanChart"></canvas>
+            </div>
+
+            {{-- Legend --}}
+            <div class="d-flex flex-wrap gap-3 mt-3 small">
+                @php
+                    $palette = ['#71dd37','#ff4560','#ffb300','#29ccef','#826af9','#fd7e14','#20c997','#e83e8c','#6c757d','#0dcaf0'];
+                    $labelPaletteMap = [];
+                    foreach ($allHumanLabels as $i => $lbl) {
+                        $labelPaletteMap[$lbl] = $palette[$i % count($palette)];
+                    }
+                @endphp
+                @foreach($allHumanLabels as $lbl)
+                <div class="d-flex align-items-center gap-1">
+                    <span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:{{ $labelPaletteMap[$lbl] }};flex-shrink:0;"></span>
+                    <span>{{ $lbl }}</span>
+                </div>
+                @endforeach
+            </div>
+
+            {{-- Detail table --}}
+            <div class="table-responsive mt-3">
+                <table class="table table-sm table-hover align-middle mb-0" style="font-size:.82rem;">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width:160px;">LLM Label</th>
+                            @foreach($allHumanLabels as $lbl)
+                                <th class="text-center">{{ $lbl }}</th>
+                            @endforeach
+                            <th class="text-center">Total</th>
+                            <th style="min-width:120px;">Agreement rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($llmVsHuman as $llmLbl => $humanCounts)
+                            @php
+                                $rowTotal = array_sum($humanCounts);
+                                // Agreement = human majority said the same category as LLM (name match)
+                                $agreedCount = $humanCounts[$llmLbl] ?? 0;
+                                $agreedPct   = $rowTotal > 0 ? round($agreedCount / $rowTotal * 100, 1) : 0;
+                            @endphp
+                            <tr>
+                                <td class="fw-semibold">{{ $llmLbl }}</td>
+                                @foreach($allHumanLabels as $lbl)
+                                    @php $c = $humanCounts[$lbl] ?? 0; @endphp
+                                    <td class="text-center {{ $c > 0 && $lbl === $llmLbl ? 'table-success' : ($c > 0 ? 'table-warning' : '') }}">
+                                        {{ $c > 0 ? $c : '—' }}
+                                    </td>
+                                @endforeach
+                                <td class="text-center fw-semibold">{{ $rowTotal }}</td>
+                                <td>
+                                    @if($llmLbl !== 'Normal')
+                                        <div class="d-flex align-items-center gap-2">
+                                            <div class="progress flex-grow-1" style="height:6px;">
+                                                <div class="progress-bar {{ $agreedPct >= 70 ? 'bg-success' : ($agreedPct >= 40 ? 'bg-warning' : 'bg-danger') }}"
+                                                     style="width:{{ $agreedPct }}%"></div>
+                                            </div>
+                                            <small>{{ $agreedPct }}%</small>
+                                        </div>
+                                    @else
+                                        <span class="text-muted small">—</span>
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+            <p class="small text-muted mt-2 mb-0">
+                <span class="badge bg-label-success">Green cells</span> = LLM and human agreed on the label.
+                <span class="badge bg-label-warning ms-1">Yellow cells</span> = human majority chose a different label.
+                <strong>Agreement rate</strong> applies only to non-Normal LLM labels (name match with human majority).
+            </p>
+        </div>
+    </div>
+    @endif
 
     {{-- ── PER-RUN SUMMARY TABLE ────────────────────────────────────────────── --}}
     <div class="card">
@@ -589,6 +708,52 @@
     });
 
     @endunless
+
+    // ── LLM vs Human label matrix (stacked horizontal bar) ────────────────
+    @if(!empty($llmVsHuman))
+    (function () {
+        const palette      = ['#71dd37','#ff4560','#ffb300','#29ccef','#826af9','#fd7e14','#20c997','#e83e8c','#6c757d','#0dcaf0'];
+        const humanLabels  = @json(array_values($allHumanLabels));
+        const llmVsHuman   = @json($llmVsHuman);
+        const llmRowLabels = Object.keys(llmVsHuman);
+
+        // Build one dataset per human label
+        const datasets = humanLabels.map((hLabel, i) => ({
+            label: hLabel,
+            data: llmRowLabels.map(llmLbl => llmVsHuman[llmLbl][hLabel] ?? 0),
+            backgroundColor: palette[i % palette.length],
+            borderRadius: 4,
+            borderWidth: 0,
+        }));
+
+        new Chart(document.getElementById('llmVsHumanChart'), {
+            type: 'bar',
+            data: { labels: llmRowLabels, datasets },
+            options: {
+                indexAxis: 'y',
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => {
+                                const total = datasets.reduce((s, ds) => s + (ds.data[ctx.dataIndex] || 0), 0);
+                                const pct   = total > 0 ? (ctx.raw / total * 100).toFixed(1) : 0;
+                                return ` ${ctx.dataset.label}: ${ctx.raw} (${pct}%)`;
+                            },
+                        },
+                    },
+                },
+                scales: {
+                    x: { stacked: true, grid: { color: gridColor }, ticks: { color: textColor } },
+                    y: { stacked: true, grid: { display: false }, ticks: { color: textColor } },
+                },
+                responsive: true,
+                maintainAspectRatio: false,
+            },
+        });
+    })();
+    @endif
+
 })();
 </script>
 @endpush
