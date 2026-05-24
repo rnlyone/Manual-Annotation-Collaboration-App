@@ -210,13 +210,15 @@ $(document).ready(function () {
 
     // Dynamic annotator columns (index 7+)
     const annotatorColumns = annotators.map(function (a) {
+        const userId = a.id;
         return {
             data: a.key, name: a.key, orderable: false, searchable: false,
-            render: function (val) {
+            render: function (val, type, row) {
                 if (!val || val === '-') return '<span class="text-muted">—</span>';
-                // Multiple labels separated by " | "
+                const isPhase1 = Array.isArray(row.phase1_annotator_ids) && row.phase1_annotator_ids.includes(userId);
+                const badgeClass = isPhase1 ? 'bg-label-warning' : 'bg-label-secondary';
                 return val.split(' | ').map(function (l) {
-                    return '<span class="badge bg-label-secondary me-1">' + $('<div>').text(l.trim()).html() + '</span>';
+                    return '<span class="badge ' + badgeClass + ' me-1">' + $('<div>').text(l.trim()).html() + '</span>';
                 }).join('');
             }
         };

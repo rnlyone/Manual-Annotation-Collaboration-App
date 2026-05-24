@@ -515,18 +515,37 @@ class DataController extends Controller
                 ->map(fn ($g) => $g->first()->llm_label);
         }
 
-        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds) {
+        // --- Phase-1 annotator IDs per data_id (annotation linked to LLM screening) ---
+        // These are the users whose annotation was the input to Phase 2 LLM screening.
+        $phase1AnnotatorsByData = collect();
+        if ($dataIds->isNotEmpty()) {
+            $screenedAnnotationIds = AiScreening::whereIn('data_id', $dataIds)
+                ->whereNotNull('annotation_id')
+                ->pluck('annotation_id')
+                ->unique()
+                ->values();
+
+            if ($screenedAnnotationIds->isNotEmpty()) {
+                $phase1AnnotatorsByData = Annotation::whereIn('id', $screenedAnnotationIds)
+                    ->get(['id', 'data_id', 'user_id'])
+                    ->groupBy('data_id')
+                    ->map(fn ($rows) => $rows->pluck('user_id')->unique()->values()->all());
+            }
+        }
+
+        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds, $phase1AnnotatorsByData) {
             $content = strlen($item->content) > 100
                 ? substr($item->content, 0, 100) . '...'
                 : $item->content;
 
             $payload = [
-                'id'             => (string) $item->id,
-                'content'        => $content,
-                'created_at'     => $item->created_at?->format('Y-m-d H:i:s'),
-                'updated_at'     => $item->updated_at?->format('Y-m-d H:i:s'),
-                'packages_count' => (int) ($item->packages_count ?? 0),
-                'llm_label'      => $llmLabels->get($item->id, '-') ?? '-',
+                'id'                   => (string) $item->id,
+                'content'              => $content,
+                'created_at'           => $item->created_at?->format('Y-m-d H:i:s'),
+                'updated_at'           => $item->updated_at?->format('Y-m-d H:i:s'),
+                'packages_count'       => (int) ($item->packages_count ?? 0),
+                'llm_label'            => $llmLabels->get($item->id, '-') ?? '-',
+                'phase1_annotator_ids' => $phase1AnnotatorsByData->get($item->id, []),
             ];
 
             foreach ($allAnnotatorIds as $userId) {
