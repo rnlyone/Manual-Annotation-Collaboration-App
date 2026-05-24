@@ -7,6 +7,7 @@ use App\Models\AiScreening;
 use App\Models\Category;
 use App\Models\PackageData;
 use App\Models\Phase2Run;
+use App\Models\User;
 
 class Phase3InsightsController extends Controller
 {
@@ -35,16 +36,27 @@ class Phase3InsightsController extends Controller
         $allPhase3Items = PackageData::whereIn('package_id', $phase3PackageIds)
             ->get(['package_id', 'data_id']);
 
-        $totalItems = $allPhase3Items->count();
+        // Use unique data_ids for totals — same data item can appear in multiple Phase 3 packages
+        $phase3DataIds = $allPhase3Items->pluck('data_id')->unique()->values();
+        $totalItems    = $phase3DataIds->count();
+
+        // Annotator-role users — used to align "complete" with Dataset Preview
+        $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
+        $annotatorRoleCount = $annotatorRoleIds->count();
 
         // All Phase 3 annotations scoped to their package via annotated_at
         $allAnnotations = Annotation::whereIn('annotated_at', $phase3PackageIds)
             ->get(['id', 'data_id', 'annotated_at', 'category_ids', 'user_id']);
 
-        // Group by composite key "data_id|package_id"
+        // Group by composite key "data_id|package_id" — used for IAA, categories, LLM comparison
         $annotsByItemKey = $allAnnotations->groupBy(
             fn ($a) => $a->data_id . '|' . $a->annotated_at
         );
+
+        // Same grouping but restricted to annotator-role users — used for progress tracking
+        $roleAnnotsByItemKey = $allAnnotations
+            ->filter(fn ($a) => $annotatorRoleIds->contains($a->user_id))
+            ->groupBy(fn ($a) => $a->data_id . '|' . $a->annotated_at);
 
         // ai_screenings per run, only for items that ended up in Phase 3
         $phase3DataIdsByPackage = $allPhase3Items->groupBy('package_id')
@@ -72,40 +84,28 @@ class Phase3InsightsController extends Controller
 
         // ── Annotation progress buckets ───────────────────────────────────────
         //
-        // Count DISTINCT human annotators per Phase 3 item, combining:
-        //   Phase 1 annotations (annotated_at = source_package_id)
-        //   Phase 3 annotations (annotated_at = phase3_package_id)
+        // Mirrors the Dataset Preview "complete annotation" filter exactly:
+        // count DISTINCT annotator-role users who annotated each Phase 3 data item
+        // across ALL packages (not limited to source or Phase 3 package).
         //
-        //   1 annotator → Phase 1 only (not yet Phase 3 reviewed)
-        //   2 annotators → Phase 3 ongoing (1 Phase 3 reviewer)
-        //   3 annotators → Phase 3 complete (2 Phase 3 reviewers)
+        //   1 → only 1 annotator-role user has annotated
+        //   2 → 2 annotator-role users have annotated
+        //   N → all N annotator-role users have annotated = complete
 
-        $sourcePackageIds  = $runs->pluck('source_package_id');
-        $phase3ToSource    = $runs->pluck('source_package_id', 'phase3_package_id');
-        $phase3DataIds     = $allPhase3Items->pluck('data_id')->unique();
+        // All annotator-role annotations for Phase 3 data items — any package
+        $allRoleAnnotsByDataId = Annotation::whereIn('data_id', $phase3DataIds)
+            ->whereIn('user_id', $annotatorRoleIds)
+            ->get(['data_id', 'user_id'])
+            ->groupBy('data_id');
 
-        // Load Phase 1 annotations (same data_ids, but annotated_at = source package)
-        $phase1Annotations = Annotation::whereIn('annotated_at', $sourcePackageIds)
-            ->whereIn('data_id', $phase3DataIds)
-            ->get(['data_id', 'annotated_at', 'user_id'])
-            ->groupBy(fn ($a) => $a->data_id . '|' . $a->annotated_at);
+        $progressBuckets = array_fill_keys(range(1, max($annotatorRoleCount, 1)), 0);
 
-        $progressBuckets = [1 => 0, 2 => 0, 3 => 0];
-        foreach ($allPhase3Items as $item) {
-            $p3Key    = $item->data_id . '|' . $item->package_id;
-            $srcPkgId = $phase3ToSource[$item->package_id] ?? null;
-            $p1Key    = $srcPkgId ? ($item->data_id . '|' . $srcPkgId) : null;
-
-            $p1Users = $p1Key && isset($phase1Annotations[$p1Key])
-                ? $phase1Annotations[$p1Key]->pluck('user_id')
-                : collect();
-
-            $p3Users = isset($annotsByItemKey[$p3Key])
-                ? $annotsByItemKey[$p3Key]->pluck('user_id')
-                : collect();
-
-            $distinctUsers = $p1Users->merge($p3Users)->unique()->count();
-            $progressBuckets[max(1, min($distinctUsers, 3))]++;
+        // Iterate unique data_ids — avoids double-counting items in multiple Phase 3 packages
+        foreach ($phase3DataIds as $dataId) {
+            $distinctUsers = isset($allRoleAnnotsByDataId[$dataId])
+                ? $allRoleAnnotsByDataId[$dataId]->pluck('user_id')->unique()->count()
+                : 0;
+            $progressBuckets[max(1, min($distinctUsers, $annotatorRoleCount))]++;
         }
 
         // ── Source breakdown ──────────────────────────────────────────────────
@@ -320,32 +320,25 @@ class Phase3InsightsController extends Controller
 
         // ── Per-run summary table ─────────────────────────────────────────────
 
-        $runSummaries = $runs->map(function ($run) use ($phase3DataIdsByPackage, $annotsByItemKey, $screeningsByItemKey, $phase1Annotations, $phase3ToSource) {
+        $runSummaries = $runs->map(function ($run) use ($phase3DataIdsByPackage, $annotsByItemKey, $screeningsByItemKey, $roleAnnotsByItemKey, $allRoleAnnotsByDataId, $annotatorRoleCount) {
             $pkgDataIds = $phase3DataIdsByPackage[$run->phase3_package_id] ?? collect();
             $total      = $pkgDataIds->count();
             $fullyDone  = 0;
             $started    = 0;
 
-            $srcPkgId = $phase3ToSource[$run->phase3_package_id] ?? null;
+            $srcPkgId = null; // no longer needed — using all-packages count
 
             foreach ($pkgDataIds as $dataId) {
                 $p3Key = $dataId . '|' . $run->phase3_package_id;
-                $p1Key = $srcPkgId ? ($dataId . '|' . $srcPkgId) : null;
 
-                $p1Users = $p1Key && isset($phase1Annotations[$p1Key])
-                    ? $phase1Annotations[$p1Key]->pluck('user_id')
-                    : collect();
+                // "complete" = all annotator-role users annotated this item in any package
+                $distinctCount = isset($allRoleAnnotsByDataId[$dataId])
+                    ? $allRoleAnnotsByDataId[$dataId]->pluck('user_id')->unique()->count()
+                    : 0;
 
-                $p3Users = isset($annotsByItemKey[$p3Key])
-                    ? $annotsByItemKey[$p3Key]->pluck('user_id')
-                    : collect();
-
-                $distinctCount = $p1Users->merge($p3Users)->unique()->count();
-
-                // Consistent with progressBuckets: "complete" = 3 distinct users total
-                if ($distinctCount >= 3) $fullyDone++;
-                // "started" = at least one Phase 3 annotation exists
-                if ($p3Users->isNotEmpty()) $started++;
+                if ($distinctCount >= $annotatorRoleCount) $fullyDone++;
+                // "started" = at least one annotator-role user has a Phase 3 annotation
+                if (isset($roleAnnotsByItemKey[$p3Key]) && $roleAnnotsByItemKey[$p3Key]->isNotEmpty()) $started++;
             }
 
             return [
@@ -367,6 +360,7 @@ class Phase3InsightsController extends Controller
                 'empty'              => false,
                 'runs'               => $runSummaries,
                 'totalItems'         => $totalItems,
+                'annotatorRoleCount' => $annotatorRoleCount,
                 'progressBuckets'    => $progressBuckets,
                 'sourceBreakdown'    => $sourceBreakdown,
                 'iaaStats'           => $iaaStats,
