@@ -388,6 +388,97 @@ class DataController extends Controller
     }
 
     /**
+     * Dataset preview page.
+     */
+    public function datasetPreview()
+    {
+        $totalCount = Data::count();
+
+        $headstyle = '<link rel="stylesheet" href="/assets/vendor/libs/sweetalert2/sweetalert2.css">';
+        $headscript = '
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+        <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+        <script src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+        <script src="https://cdn.datatables.net/responsive/2.4.1/js/dataTables.responsive.min.js"></script>
+        <script src="https://cdn.datatables.net/responsive/2.4.1/js/responsive.bootstrap5.min.js"></script>';
+
+        return view('_app.app', [
+            'content' => 'data.dataset-preview',
+            'headerdata' => ['pagetitle' => 'Dataset Preview', 'headstyle' => $headstyle, 'headscript' => $headscript],
+            'sidenavdata' => ['active' => 'data.dataset-preview'],
+            'contentdata' => [
+                'totalCount' => $totalCount,
+                'tableDataUrl' => route('data.data'),
+                'exportUrl' => route('data.dataset-export'),
+            ],
+        ]);
+    }
+
+    /**
+     * Export dataset as CSV with customizable columns.
+     */
+    public function datasetExport(Request $request)
+    {
+        $allowedCols = ['id', 'content', 'created_at', 'updated_at', 'packages_count'];
+
+        $rawColumns = $request->input('columns', 'id,content,created_at,updated_at');
+        $columns = array_values(array_filter(
+            array_map('trim', explode(',', $rawColumns)),
+            fn ($c) => in_array($c, $allowedCols, true)
+        ));
+
+        if (empty($columns)) {
+            $columns = ['id', 'content', 'created_at', 'updated_at'];
+        }
+
+        $includePackagesCount = in_array('packages_count', $columns, true);
+        $dbCols = array_values(array_unique(array_merge(
+            ['id', 'created_at'],
+            array_filter($columns, fn ($c) => $c !== 'packages_count')
+        )));
+
+        $query = Data::query()->select($dbCols);
+
+        if ($includePackagesCount) {
+            $query->withCount(['packageAssignments as packages_count']);
+        }
+
+        $searchValue = trim((string) $request->input('search', ''));
+        if ($searchValue !== '') {
+            $query->where(function ($q) use ($searchValue) {
+                $q->where('id', 'like', "%{$searchValue}%")
+                    ->orWhere('content', 'like', "%{$searchValue}%");
+            });
+        }
+
+        $data = $query->orderBy('created_at', 'desc')->get();
+
+        $timestamp = Carbon::now()->format('Ymd-His');
+        $fileName = "dataset-{$timestamp}.csv";
+
+        return response()->streamDownload(function () use ($data, $columns) {
+            $handle = fopen('php://output', 'w');
+            fputcsv($handle, $columns);
+
+            foreach ($data as $row) {
+                $rowData = [];
+                foreach ($columns as $col) {
+                    if ($col === 'packages_count') {
+                        $rowData[] = (int) ($row->packages_count ?? 0);
+                    } elseif (in_array($col, ['created_at', 'updated_at'], true)) {
+                        $rowData[] = $row->$col ? $row->$col->format('Y-m-d H:i:s') : '';
+                    } else {
+                        $rowData[] = $row->$col ?? '';
+                    }
+                }
+                fputcsv($handle, $rowData);
+            }
+
+            fclose($handle);
+        }, $fileName, ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    /**
      * Remove the specified resource from storage.
      */
     public function destroy(Data $data)

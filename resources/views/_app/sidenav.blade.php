@@ -93,7 +93,7 @@
             </ul>
         </li>
                 <!-- Settings -->
-        <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['packages', 'categories', 'data', 'users', 'annotations.manage', 'ai-settings']) ? 'active open' : ''}}">
+        <li class="menu-item {{isset($sidenavdata['active']) && in_array($sidenavdata['active'], ['packages', 'categories', 'data', 'data.dataset-preview', 'users', 'annotations.manage', 'ai-settings']) ? 'active open' : ''}}">
             <a href="javascript:void(0);" class="menu-link menu-toggle">
                 <i class="menu-icon tf-icons ti ti-settings"></i>
                 <div data-i18n="Settings">Settings</div>
@@ -117,6 +117,11 @@
                 <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'data' ? 'active' : ''}}">
                     <a href="{{route('data.index')}}" class="menu-link">
                         <div data-i18n="Data Management">Data Management</div>
+                    </a>
+                </li>
+                <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'data.dataset-preview' ? 'active' : ''}}">
+                    <a href="{{route('data.dataset-preview')}}" class="menu-link">
+                        <div data-i18n="Dataset Preview">Dataset Preview</div>
                     </a>
                 </li>
                 <li class="menu-item {{isset($sidenavdata['active']) && $sidenavdata['active'] == 'users' ? 'active' : ''}}">

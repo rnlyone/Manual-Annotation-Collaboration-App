@@ -20,6 +20,8 @@ Route::middleware('auth')->group(function () {
         Route::get('users/data', [\App\Http\Controllers\UserController::class, 'tabledata'])->name('users.data');
         Route::match(['GET', 'POST'], 'data/data', [\App\Http\Controllers\DataController::class, 'tabledata'])->name('data.data');
         Route::match(['GET', 'POST'], 'data/all-ids', [\App\Http\Controllers\DataController::class, 'allIds'])->name('data.allIds');
+        Route::get('data/dataset-preview', [\App\Http\Controllers\DataController::class, 'datasetPreview'])->name('data.dataset-preview');
+        Route::get('data/dataset-export', [\App\Http\Controllers\DataController::class, 'datasetExport'])->name('data.dataset-export');
         Route::get('categories/data', [\App\Http\Controllers\CategoryController::class, 'tabledata'])->name('categories.data');
         Route::get('packages/data', [\App\Http\Controllers\PackageController::class, 'tabledata'])->name('packages.data');
         Route::post('data/addbycsv', [\App\Http\Controllers\DataController::class, 'addByCsv'])->name('data.addbycsv');
