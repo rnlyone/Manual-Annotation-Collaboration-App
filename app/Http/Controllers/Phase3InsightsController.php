@@ -110,23 +110,30 @@ class Phase3InsightsController extends Controller
 
         // ── Source breakdown ──────────────────────────────────────────────────
 
+        // Group screenings by data_id so we can work at the unique-item level
+        $screeningsByDataId = $allScreenings->groupBy('data_id');
+
         $sourceBreakdown = ['llm_flagged' => 0, 'qc_sample' => 0, 'non_normal' => 0];
-        foreach ($allPhase3Items as $item) {
-            $key       = $item->data_id . '|' . $item->package_id;
-            $screening = $screeningsByItemKey->get($key);
 
-            // Priority: Phase 1 non-normal label > LLM flagged > QC sample.
-            // An item with a non-normal Phase 1 label is in Phase 3 primarily because
-            // it was already labelled non-normal by a human — even if the LLM also
-            // flagged it. Check that condition first so those items are not swallowed
-            // by the LLM-flagged bucket.
-            $p1IsNonNormal = $screening && $screening->phase1_label && $screening->phase1_label !== 'Normal';
+        // Iterate unique data_ids (matches progressBuckets — avoids double-counting
+        // items that appear in multiple Phase 3 packages).
+        foreach ($phase3DataIds as $dataId) {
+            // An item can appear in multiple Phase 2 runs (different source packages).
+            // Check ALL screening records for this data_id — not just the first — so that
+            // a non-normal Phase 1 label from *any* run takes priority over llm_flagged
+            // from another run.
+            $screenings = $screeningsByDataId->get($dataId) ?? collect();
 
-            if (! $screening || $p1IsNonNormal) {
+            // Priority: Phase 1 non-normal (any run) > LLM flagged (any run) > QC sample (any run)
+            $hasNonNormalP1 = $screenings->contains(
+                fn ($s) => $s->phase1_label && $s->phase1_label !== 'Normal'
+            );
+
+            if ($screenings->isEmpty() || $hasNonNormalP1) {
                 $sourceBreakdown['non_normal']++;
-            } elseif ($screening->flagged) {
+            } elseif ($screenings->contains('flagged', true)) {
                 $sourceBreakdown['llm_flagged']++;
-            } elseif ($screening->in_qc_sample) {
+            } elseif ($screenings->contains('in_qc_sample', true)) {
                 $sourceBreakdown['qc_sample']++;
             } else {
                 $sourceBreakdown['non_normal']++;
