@@ -127,6 +127,10 @@
                                     <input class="form-check-input col-toggle" type="checkbox" id="col-first_annotator" value="first_annotator">
                                     <label class="form-check-label" for="col-first_annotator">First Annotator</label>
                                 </div>
+                                <div class="form-check form-check-inline mb-0">
+                                    <input class="form-check-input col-toggle" type="checkbox" id="col-phase3_data" value="phase3_data">
+                                    <label class="form-check-label" for="col-phase3_data">Phase 3 Data</label>
+                                </div>
                             </div>
                         </div>
                         {{-- LLM Label --}}
@@ -196,6 +200,7 @@
                                 <th data-col="packages_count">Package Count</th>
                                 <th data-col="llm_label">LLM Label</th>
                                 <th data-col="first_annotator">First Annotator</th>
+                                <th data-col="phase3_data">Phase 3 Data</th>
                                 @foreach ($contentdata['annotators'] as $annotator)
                                 <th data-col="{{ $annotator['key'] }}">{{ $annotator['name'] }}</th>
                                 @endforeach
@@ -240,6 +245,13 @@ $(document).ready(function () {
                 return '<span class="badge bg-label-primary">' + $('<div>').text(val).html() + '</span>';
             }
         },
+        {
+            data: 'is_phase3', name: 'phase3_data', orderable: false, searchable: false,
+            render: function (val) {
+                if (val) return '<span class="badge bg-label-success">Yes</span>';
+                return '<span class="text-muted">—</span>';
+            }
+        },
     ];
 
     // Dynamic annotator columns (index 8+)
@@ -263,9 +275,9 @@ $(document).ready(function () {
     // Build key → column index map
     const colIndexMap = {
         id: 1, content: 2, created_at: 3, updated_at: 4,
-        packages_count: 5, llm_label: 6, first_annotator: 7,
+        packages_count: 5, llm_label: 6, first_annotator: 7, phase3_data: 8,
     };
-    annotators.forEach(function (a, i) { colIndexMap[a.key] = 8 + i; });
+    annotators.forEach(function (a, i) { colIndexMap[a.key] = 9 + i; });
 
     const $overlay = $('#datasetOverlay');
 
@@ -301,7 +313,7 @@ $(document).ready(function () {
     dataTable.on('draw.dt', function () { $overlay.addClass('d-none'); });
 
     // Initial visibility: hide cols that are unchecked by default
-    ['updated_at', 'packages_count', 'llm_label'].forEach(function (k) {
+    ['updated_at', 'packages_count', 'llm_label', 'phase3_data'].forEach(function (k) {
         dataTable.column(colIndexMap[k]).visible(false);
     });
     annotators.forEach(function (a) {

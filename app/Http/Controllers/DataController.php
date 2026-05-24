@@ -10,6 +10,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class DataController extends Controller
@@ -572,7 +573,19 @@ class DataController extends Controller
                 ->map(fn ($userId) => $userNameMap->get($userId, '-'));
         }
 
-        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds, $phase1AnnotatorsByData, $firstAnnotatorNames) {
+        // --- Phase 3 membership per data_id ------------------------------------
+        $phase3DataIdSet = collect();
+        if ($dataIds->isNotEmpty()) {
+            $phase3DataIdSet = DB::table('package_data')
+                ->join('packages', 'packages.id', '=', 'package_data.package_id')
+                ->where('packages.type', 'phase3')
+                ->whereIn('package_data.data_id', $dataIds->all())
+                ->pluck('package_data.data_id')
+                ->unique()
+                ->flip();
+        }
+
+        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds, $phase1AnnotatorsByData, $firstAnnotatorNames, $phase3DataIdSet) {
             $content = strlen($item->content) > 100
                 ? substr($item->content, 0, 100) . '...'
                 : $item->content;
@@ -585,6 +598,7 @@ class DataController extends Controller
                 'packages_count'       => (int) ($item->packages_count ?? 0),
                 'llm_label'            => $llmLabels->get($item->id, '-') ?? '-',
                 'first_annotator'      => $firstAnnotatorNames->get($item->id, '-'),
+                'is_phase3'            => $phase3DataIdSet->has($item->id),
                 'phase1_annotator_ids' => $phase1AnnotatorsByData->get($item->id, []),
             ];
 
@@ -609,7 +623,7 @@ class DataController extends Controller
      */
     public function datasetExport(Request $request)
     {
-        $baseAllowed = ['id', 'content', 'created_at', 'updated_at', 'packages_count', 'llm_label', 'first_annotator'];
+        $baseAllowed = ['id', 'content', 'created_at', 'updated_at', 'packages_count', 'llm_label', 'first_annotator', 'phase3_data'];
 
         $rawColumns     = $request->input('columns', 'id,content,created_at,updated_at');
         $requestedCols  = array_map('trim', explode(',', $rawColumns));
@@ -623,9 +637,10 @@ class DataController extends Controller
             $columns = ['id', 'content', 'created_at', 'updated_at'];
         }
 
-        $includePackagesCount = in_array('packages_count', $columns, true);
-        $includeLlmLabel      = in_array('llm_label', $columns, true);
+        $includePackagesCount  = in_array('packages_count', $columns, true);
+        $includeLlmLabel       = in_array('llm_label', $columns, true);
         $includeFirstAnnotator = in_array('first_annotator', $columns, true);
+        $includePhase3Data     = in_array('phase3_data', $columns, true);
         $annotatorCols        = array_values(array_filter($columns, fn ($c) => preg_match('/^annotator_\d+$/', $c)));
         $annotatorUserIds     = collect($annotatorCols)
             ->map(fn ($c) => (int) str_replace('annotator_', '', $c))
@@ -663,6 +678,7 @@ class DataController extends Controller
                 return $annotatorNames->get((int) $m[1], 'Annotator ' . $m[1]);
             }
             if ($col === 'first_annotator') return 'First Annotator';
+            if ($col === 'phase3_data') return 'Phase 3 Data';
             return $col;
         })->all();
 
@@ -715,11 +731,23 @@ class DataController extends Controller
                 ->map(fn ($userId) => $userNameMap->get($userId, '-'));
         }
 
+        // Phase 3 membership lookup
+        $phase3DataIdSetExport = collect();
+        if ($dataIds->isNotEmpty() && $includePhase3Data) {
+            $phase3DataIdSetExport = DB::table('package_data')
+                ->join('packages', 'packages.id', '=', 'package_data.package_id')
+                ->where('packages.type', 'phase3')
+                ->whereIn('package_data.data_id', $dataIds->all())
+                ->pluck('package_data.data_id')
+                ->unique()
+                ->flip();
+        }
+
         $timestamp = Carbon::now()->format('Ymd-His');
         $fileName  = "dataset-{$timestamp}.csv";
 
         return response()->streamDownload(
-            function () use ($dataItems, $columns, $headers, $annotsByDataUser, $llmLabels, $firstAnnotatorsExport) {
+            function () use ($dataItems, $columns, $headers, $annotsByDataUser, $llmLabels, $firstAnnotatorsExport, $phase3DataIdSetExport) {
                 $handle = fopen('php://output', 'w');
                 fputcsv($handle, $headers);
 
@@ -731,6 +759,8 @@ class DataController extends Controller
                             $rowData[] = ($label !== null && $label !== '') ? $label : '-';
                         } elseif ($col === 'first_annotator') {
                             $rowData[] = $firstAnnotatorsExport->get($row->id, '-');
+                        } elseif ($col === 'phase3_data') {
+                            $rowData[] = $phase3DataIdSetExport->has($row->id) ? 'Yes' : 'No';
                         } elseif ($col === 'llm_label') {
                             $rowData[] = $llmLabels->get($row->id, '-') ?? '-';
                         } elseif ($col === 'packages_count') {
