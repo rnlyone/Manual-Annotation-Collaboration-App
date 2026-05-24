@@ -2,7 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Annotation;
+use App\Models\AiScreening;
+use App\Models\Category;
 use App\Models\Data;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -394,6 +398,16 @@ class DataController extends Controller
     {
         $totalCount = Data::count();
 
+        $annotatorIds = Annotation::distinct()->pluck('user_id');
+        $annotators = User::whereIn('id', $annotatorIds)
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn ($u) => [
+                'id'   => $u->id,
+                'name' => $u->name,
+                'key'  => 'annotator_' . $u->id,
+            ])->values();
+
         $headstyle = '<link rel="stylesheet" href="/assets/vendor/libs/sweetalert2/sweetalert2.css">';
         $headscript = '
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -403,28 +417,147 @@ class DataController extends Controller
         <script src="https://cdn.datatables.net/responsive/2.4.1/js/responsive.bootstrap5.min.js"></script>';
 
         return view('_app.app', [
-            'content' => 'data.dataset-preview',
-            'headerdata' => ['pagetitle' => 'Dataset Preview', 'headstyle' => $headstyle, 'headscript' => $headscript],
+            'content'     => 'data.dataset-preview',
+            'headerdata'  => ['pagetitle' => 'Dataset Preview', 'headstyle' => $headstyle, 'headscript' => $headscript],
             'sidenavdata' => ['active' => 'data.dataset-preview'],
             'contentdata' => [
-                'totalCount' => $totalCount,
-                'tableDataUrl' => route('data.data'),
-                'exportUrl' => route('data.dataset-export'),
+                'totalCount'   => $totalCount,
+                'annotators'   => $annotators,
+                'tableDataUrl' => route('data.dataset-preview-table'),
+                'exportUrl'    => route('data.dataset-export'),
             ],
         ]);
     }
 
     /**
-     * Export dataset as CSV with customizable columns.
+     * Server-side DataTables for dataset preview (includes annotator labels + LLM label).
+     */
+    public function datasetPreviewTableData(Request $request)
+    {
+        $dtColumns = [
+            0 => 'index',
+            1 => 'id',
+            2 => 'content',
+            3 => 'created_at',
+            4 => 'updated_at',
+        ];
+
+        $baseQuery = Data::query()
+            ->select(['id', 'content', 'created_at', 'updated_at'])
+            ->withCount(['packageAssignments as packages_count']);
+
+        $recordsTotal  = (clone $baseQuery)->count();
+        $filteredQuery = clone $baseQuery;
+
+        $searchValue = $request->input('search.value');
+        if ($searchValue) {
+            $filteredQuery->where(function ($q) use ($searchValue) {
+                $q->where('id', 'like', "%{$searchValue}%")
+                    ->orWhere('content', 'like', "%{$searchValue}%");
+            });
+        }
+
+        $recordsFiltered = (clone $filteredQuery)->count();
+
+        $start  = (int) $request->input('start', 0);
+        $length = (int) $request->input('length', 25);
+        if ($length <= 0) {
+            $length = 25;
+        }
+        $length = min($length, 500);
+
+        $orderColIdx    = (int) $request->input('order.0.column', 3);
+        $orderColumn    = $dtColumns[$orderColIdx] ?? 'created_at';
+        if ($orderColumn === 'index') {
+            $orderColumn = 'created_at';
+        }
+        $orderDirection = $request->input('order.0.dir', 'desc') === 'asc' ? 'asc' : 'desc';
+
+        $dataItems = $filteredQuery
+            ->orderBy($orderColumn, $orderDirection)
+            ->skip($start)
+            ->take($length)
+            ->get();
+
+        $dataIds = $dataItems->pluck('id');
+
+        // --- All annotator user IDs (for consistent column structure) ---------
+        $allAnnotatorIds = Annotation::distinct()->pluck('user_id');
+        $categories      = Category::pluck('name', 'id');
+        $annotsByDataUser = collect();
+
+        if ($dataIds->isNotEmpty()) {
+            $annotations = Annotation::whereIn('data_id', $dataIds)
+                ->get(['data_id', 'user_id', 'category_ids']);
+
+            $annotsByDataUser = $annotations
+                ->groupBy('data_id')
+                ->map(fn ($dataAnnots) =>
+                    $dataAnnots->groupBy('user_id')->map(function ($userAnnots) use ($categories) {
+                        $catIds = collect($userAnnots)
+                            ->flatMap(fn ($a) => $a->category_ids ?? [])
+                            ->unique()
+                            ->values();
+                        $labels = $catIds->map(fn ($id) => $categories->get($id) ?? (string) $id)->filter();
+                        return $labels->isEmpty() ? '-' : $labels->implode(' | ');
+                    })
+                );
+        }
+
+        // --- Latest LLM label per data_id ------------------------------------
+        $llmLabels = collect();
+        if ($dataIds->isNotEmpty()) {
+            $llmLabels = AiScreening::whereIn('data_id', $dataIds)
+                ->whereNotNull('llm_label')
+                ->orderBy('id', 'desc')
+                ->get(['data_id', 'llm_label'])
+                ->groupBy('data_id')
+                ->map(fn ($g) => $g->first()->llm_label);
+        }
+
+        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds) {
+            $content = strlen($item->content) > 100
+                ? substr($item->content, 0, 100) . '...'
+                : $item->content;
+
+            $payload = [
+                'id'             => (string) $item->id,
+                'content'        => $content,
+                'created_at'     => $item->created_at?->format('Y-m-d H:i:s'),
+                'updated_at'     => $item->updated_at?->format('Y-m-d H:i:s'),
+                'packages_count' => (int) ($item->packages_count ?? 0),
+                'llm_label'      => $llmLabels->get($item->id, '-') ?? '-',
+            ];
+
+            foreach ($allAnnotatorIds as $userId) {
+                $label = $annotsByDataUser->get($item->id, collect())->get($userId);
+                $payload['annotator_' . $userId] = ($label !== null && $label !== '') ? $label : '-';
+            }
+
+            return $payload;
+        });
+
+        return response()->json([
+            'draw'            => (int) $request->input('draw'),
+            'recordsTotal'    => $recordsTotal,
+            'recordsFiltered' => $recordsFiltered,
+            'data'            => $data,
+        ]);
+    }
+
+    /**
+     * Export dataset as CSV with customizable columns (base + annotator labels + LLM label).
      */
     public function datasetExport(Request $request)
     {
-        $allowedCols = ['id', 'content', 'created_at', 'updated_at', 'packages_count'];
+        $baseAllowed = ['id', 'content', 'created_at', 'updated_at', 'packages_count', 'llm_label'];
 
-        $rawColumns = $request->input('columns', 'id,content,created_at,updated_at');
+        $rawColumns     = $request->input('columns', 'id,content,created_at,updated_at');
+        $requestedCols  = array_map('trim', explode(',', $rawColumns));
+
         $columns = array_values(array_filter(
-            array_map('trim', explode(',', $rawColumns)),
-            fn ($c) => in_array($c, $allowedCols, true)
+            $requestedCols,
+            fn ($c) => in_array($c, $baseAllowed, true) || preg_match('/^annotator_\d+$/', $c)
         ));
 
         if (empty($columns)) {
@@ -432,13 +565,19 @@ class DataController extends Controller
         }
 
         $includePackagesCount = in_array('packages_count', $columns, true);
+        $includeLlmLabel      = in_array('llm_label', $columns, true);
+        $annotatorCols        = array_values(array_filter($columns, fn ($c) => preg_match('/^annotator_\d+$/', $c)));
+        $annotatorUserIds     = collect($annotatorCols)
+            ->map(fn ($c) => (int) str_replace('annotator_', '', $c))
+            ->filter()
+            ->values();
+
         $dbCols = array_values(array_unique(array_merge(
             ['id', 'created_at'],
-            array_filter($columns, fn ($c) => $c !== 'packages_count')
+            array_filter($columns, fn ($c) => in_array($c, ['id', 'content', 'created_at', 'updated_at'], true))
         )));
 
         $query = Data::query()->select($dbCols);
-
         if ($includePackagesCount) {
             $query->withCount(['packageAssignments as packages_count']);
         }
@@ -451,31 +590,86 @@ class DataController extends Controller
             });
         }
 
-        $data = $query->orderBy('created_at', 'desc')->get();
+        $dataItems = $query->orderBy('created_at', 'desc')->get();
+        $dataIds   = $dataItems->pluck('id');
+
+        // Resolve annotator names for headers
+        $annotatorNames = $annotatorUserIds->isNotEmpty()
+            ? User::whereIn('id', $annotatorUserIds)->pluck('name', 'id')
+            : collect();
+
+        $headers = collect($columns)->map(function ($col) use ($annotatorNames) {
+            if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
+                return $annotatorNames->get((int) $m[1], 'Annotator ' . $m[1]);
+            }
+            return $col;
+        })->all();
+
+        // Annotator label lookup
+        $annotsByDataUser = collect();
+        if ($dataIds->isNotEmpty() && $annotatorUserIds->isNotEmpty()) {
+            $categories  = Category::pluck('name', 'id');
+            $annotations = Annotation::whereIn('data_id', $dataIds)
+                ->whereIn('user_id', $annotatorUserIds)
+                ->get(['data_id', 'user_id', 'category_ids']);
+
+            $annotsByDataUser = $annotations
+                ->groupBy('data_id')
+                ->map(fn ($items) =>
+                    $items->groupBy('user_id')->map(function ($userAnnots) use ($categories) {
+                        $catIds = collect($userAnnots)
+                            ->flatMap(fn ($a) => $a->category_ids ?? [])
+                            ->unique()
+                            ->values();
+                        $labels = $catIds->map(fn ($id) => $categories->get($id) ?? (string) $id)->filter();
+                        return $labels->isEmpty() ? '-' : $labels->implode(' | ');
+                    })
+                );
+        }
+
+        // LLM label lookup
+        $llmLabels = collect();
+        if ($dataIds->isNotEmpty() && $includeLlmLabel) {
+            $llmLabels = AiScreening::whereIn('data_id', $dataIds)
+                ->whereNotNull('llm_label')
+                ->orderBy('id', 'desc')
+                ->get(['data_id', 'llm_label'])
+                ->groupBy('data_id')
+                ->map(fn ($g) => $g->first()->llm_label);
+        }
 
         $timestamp = Carbon::now()->format('Ymd-His');
-        $fileName = "dataset-{$timestamp}.csv";
+        $fileName  = "dataset-{$timestamp}.csv";
 
-        return response()->streamDownload(function () use ($data, $columns) {
-            $handle = fopen('php://output', 'w');
-            fputcsv($handle, $columns);
+        return response()->streamDownload(
+            function () use ($dataItems, $columns, $headers, $annotsByDataUser, $llmLabels) {
+                $handle = fopen('php://output', 'w');
+                fputcsv($handle, $headers);
 
-            foreach ($data as $row) {
-                $rowData = [];
-                foreach ($columns as $col) {
-                    if ($col === 'packages_count') {
-                        $rowData[] = (int) ($row->packages_count ?? 0);
-                    } elseif (in_array($col, ['created_at', 'updated_at'], true)) {
-                        $rowData[] = $row->$col ? $row->$col->format('Y-m-d H:i:s') : '';
-                    } else {
-                        $rowData[] = $row->$col ?? '';
+                foreach ($dataItems as $row) {
+                    $rowData = [];
+                    foreach ($columns as $col) {
+                        if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
+                            $label = $annotsByDataUser->get($row->id, collect())->get((int) $m[1]);
+                            $rowData[] = ($label !== null && $label !== '') ? $label : '-';
+                        } elseif ($col === 'llm_label') {
+                            $rowData[] = $llmLabels->get($row->id, '-') ?? '-';
+                        } elseif ($col === 'packages_count') {
+                            $rowData[] = (int) ($row->packages_count ?? 0);
+                        } elseif (in_array($col, ['created_at', 'updated_at'], true)) {
+                            $rowData[] = $row->$col ? $row->$col->format('Y-m-d H:i:s') : '';
+                        } else {
+                            $rowData[] = $row->$col ?? '';
+                        }
                     }
+                    fputcsv($handle, $rowData);
                 }
-                fputcsv($handle, $rowData);
-            }
 
-            fclose($handle);
-        }, $fileName, ['Content-Type' => 'text/csv; charset=UTF-8']);
+                fclose($handle);
+            },
+            $fileName,
+            ['Content-Type' => 'text/csv; charset=UTF-8']
+        );
     }
 
     /**

@@ -21,6 +21,7 @@ Route::middleware('auth')->group(function () {
         Route::match(['GET', 'POST'], 'data/data', [\App\Http\Controllers\DataController::class, 'tabledata'])->name('data.data');
         Route::match(['GET', 'POST'], 'data/all-ids', [\App\Http\Controllers\DataController::class, 'allIds'])->name('data.allIds');
         Route::get('data/dataset-preview', [\App\Http\Controllers\DataController::class, 'datasetPreview'])->name('data.dataset-preview');
+        Route::get('data/dataset-preview-table', [\App\Http\Controllers\DataController::class, 'datasetPreviewTableData'])->name('data.dataset-preview-table');
         Route::get('data/dataset-export', [\App\Http\Controllers\DataController::class, 'datasetExport'])->name('data.dataset-export');
         Route::get('categories/data', [\App\Http\Controllers\CategoryController::class, 'tabledata'])->name('categories.data');
         Route::get('packages/data', [\App\Http\Controllers\PackageController::class, 'tabledata'])->name('packages.data');
