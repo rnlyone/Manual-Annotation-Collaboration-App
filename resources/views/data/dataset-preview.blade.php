@@ -68,6 +68,28 @@
             </div>
         </div>
 
+        {{-- Filter: complete annotation --}}
+        <div class="col-12">
+            <div class="card border-0 bg-label-primary">
+                <div class="card-body py-3 d-flex align-items-center gap-3 flex-wrap">
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="completeOnlyToggle" role="switch">
+                        <label class="form-check-label fw-semibold" for="completeOnlyToggle">
+                            Complete Annotation Only
+                        </label>
+                    </div>
+                    <span class="text-body-secondary small">
+                        Show only data annotated by
+                        <strong>all {{ $contentdata['annotatorRoleCount'] }} annotator{{ $contentdata['annotatorRoleCount'] !== 1 ? 's' : '' }}</strong>
+                        with role <code>annotator</code>.
+                        @if ($contentdata['annotatorRoleCount'] === 0)
+                            <span class="badge bg-label-warning ms-1">No annotator-role users found</span>
+                        @endif
+                    </span>
+                </div>
+            </div>
+        </div>
+
         {{-- Column Picker --}}
         <div class="col-12">
             <div class="card">
@@ -239,7 +261,14 @@ $(document).ready(function () {
         processing: true,
         serverSide: true,
         deferRender: true,
-        ajax: { url: tableDataUrl, type: 'GET', dataSrc: 'data' },
+        ajax: {
+            url: tableDataUrl,
+            type: 'GET',
+            dataSrc: 'data',
+            data: function (d) {
+                d.complete_only = $('#completeOnlyToggle').is(':checked') ? 1 : 0;
+            }
+        },
         columns: allColumns,
         order: [[3, 'desc']],
         lengthMenu: [[25, 50, 100, 250], [25, 50, 100, 250]],
@@ -265,6 +294,11 @@ $(document).ready(function () {
     });
     annotators.forEach(function (a) {
         dataTable.column(colIndexMap[a.key]).visible(false);
+    });
+
+    // Complete annotation filter toggle
+    $('#completeOnlyToggle').on('change', function () {
+        dataTable.ajax.reload(null, true);
     });
 
     // Toggle columns

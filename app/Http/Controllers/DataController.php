@@ -408,6 +408,8 @@ class DataController extends Controller
                 'key'  => 'annotator_' . $u->id,
             ])->values();
 
+        $annotatorRoleCount = User::where('role', 'annotator')->count();
+
         $headstyle = '<link rel="stylesheet" href="/assets/vendor/libs/sweetalert2/sweetalert2.css">';
         $headscript = '
         <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -421,10 +423,11 @@ class DataController extends Controller
             'headerdata'  => ['pagetitle' => 'Dataset Preview', 'headstyle' => $headstyle, 'headscript' => $headscript],
             'sidenavdata' => ['active' => 'data.dataset-preview'],
             'contentdata' => [
-                'totalCount'   => $totalCount,
-                'annotators'   => $annotators,
-                'tableDataUrl' => route('data.dataset-preview-table'),
-                'exportUrl'    => route('data.dataset-export'),
+                'totalCount'        => $totalCount,
+                'annotators'        => $annotators,
+                'annotatorRoleCount' => $annotatorRoleCount,
+                'tableDataUrl'      => route('data.dataset-preview-table'),
+                'exportUrl'         => route('data.dataset-export'),
             ],
         ]);
     }
@@ -448,6 +451,26 @@ class DataController extends Controller
 
         $recordsTotal  = (clone $baseQuery)->count();
         $filteredQuery = clone $baseQuery;
+
+        // --- Complete annotation filter --------------------------------------
+        $completeOnly = $request->boolean('complete_only');
+        if ($completeOnly) {
+            $annotatorRoleIds    = User::where('role', 'annotator')->pluck('id');
+            $annotatorRoleCount  = $annotatorRoleIds->count();
+
+            if ($annotatorRoleCount > 0) {
+                $filteredQuery->whereIn('id', function ($sub) use ($annotatorRoleIds, $annotatorRoleCount) {
+                    $sub->select('data_id')
+                        ->from('annotations')
+                        ->whereIn('user_id', $annotatorRoleIds)
+                        ->groupBy('data_id')
+                        ->havingRaw('COUNT(DISTINCT user_id) >= ?', [$annotatorRoleCount]);
+                });
+            } else {
+                // No annotators exist — return empty result set
+                $filteredQuery->whereRaw('1 = 0');
+            }
+        }
 
         $searchValue = $request->input('search.value');
         if ($searchValue) {
