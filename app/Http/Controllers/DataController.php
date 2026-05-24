@@ -556,7 +556,23 @@ class DataController extends Controller
             }
         }
 
-        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds, $phase1AnnotatorsByData) {
+        // --- First annotator per data_id (earliest annotation by created_at) ---
+        $firstAnnotatorNames = collect();
+        if ($dataIds->isNotEmpty()) {
+            $firstAnnotByData = Annotation::whereIn('data_id', $dataIds)
+                ->orderBy('created_at', 'asc')
+                ->get(['data_id', 'user_id', 'created_at'])
+                ->groupBy('data_id')
+                ->map(fn ($annots) => $annots->first()->user_id);
+
+            $userNameMap = User::whereIn('id', $firstAnnotByData->values()->unique()->filter())
+                ->pluck('name', 'id');
+
+            $firstAnnotatorNames = $firstAnnotByData
+                ->map(fn ($userId) => $userNameMap->get($userId, '-'));
+        }
+
+        $data = $dataItems->map(function ($item) use ($annotsByDataUser, $llmLabels, $allAnnotatorIds, $phase1AnnotatorsByData, $firstAnnotatorNames) {
             $content = strlen($item->content) > 100
                 ? substr($item->content, 0, 100) . '...'
                 : $item->content;
@@ -568,6 +584,7 @@ class DataController extends Controller
                 'updated_at'           => $item->updated_at?->format('Y-m-d H:i:s'),
                 'packages_count'       => (int) ($item->packages_count ?? 0),
                 'llm_label'            => $llmLabels->get($item->id, '-') ?? '-',
+                'first_annotator'      => $firstAnnotatorNames->get($item->id, '-'),
                 'phase1_annotator_ids' => $phase1AnnotatorsByData->get($item->id, []),
             ];
 
@@ -592,7 +609,7 @@ class DataController extends Controller
      */
     public function datasetExport(Request $request)
     {
-        $baseAllowed = ['id', 'content', 'created_at', 'updated_at', 'packages_count', 'llm_label'];
+        $baseAllowed = ['id', 'content', 'created_at', 'updated_at', 'packages_count', 'llm_label', 'first_annotator'];
 
         $rawColumns     = $request->input('columns', 'id,content,created_at,updated_at');
         $requestedCols  = array_map('trim', explode(',', $rawColumns));
@@ -608,6 +625,7 @@ class DataController extends Controller
 
         $includePackagesCount = in_array('packages_count', $columns, true);
         $includeLlmLabel      = in_array('llm_label', $columns, true);
+        $includeFirstAnnotator = in_array('first_annotator', $columns, true);
         $annotatorCols        = array_values(array_filter($columns, fn ($c) => preg_match('/^annotator_\d+$/', $c)));
         $annotatorUserIds     = collect($annotatorCols)
             ->map(fn ($c) => (int) str_replace('annotator_', '', $c))
@@ -644,6 +662,7 @@ class DataController extends Controller
             if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
                 return $annotatorNames->get((int) $m[1], 'Annotator ' . $m[1]);
             }
+            if ($col === 'first_annotator') return 'First Annotator';
             return $col;
         })->all();
 
@@ -680,11 +699,27 @@ class DataController extends Controller
                 ->map(fn ($g) => $g->first()->llm_label);
         }
 
+        // First annotator lookup
+        $firstAnnotatorsExport = collect();
+        if ($dataIds->isNotEmpty() && $includeFirstAnnotator) {
+            $firstAnnotByData = Annotation::whereIn('data_id', $dataIds)
+                ->orderBy('created_at', 'asc')
+                ->get(['data_id', 'user_id', 'created_at'])
+                ->groupBy('data_id')
+                ->map(fn ($annots) => $annots->first()->user_id);
+
+            $userNameMap = User::whereIn('id', $firstAnnotByData->values()->unique()->filter())
+                ->pluck('name', 'id');
+
+            $firstAnnotatorsExport = $firstAnnotByData
+                ->map(fn ($userId) => $userNameMap->get($userId, '-'));
+        }
+
         $timestamp = Carbon::now()->format('Ymd-His');
         $fileName  = "dataset-{$timestamp}.csv";
 
         return response()->streamDownload(
-            function () use ($dataItems, $columns, $headers, $annotsByDataUser, $llmLabels) {
+            function () use ($dataItems, $columns, $headers, $annotsByDataUser, $llmLabels, $firstAnnotatorsExport) {
                 $handle = fopen('php://output', 'w');
                 fputcsv($handle, $headers);
 
@@ -694,6 +729,8 @@ class DataController extends Controller
                         if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
                             $label = $annotsByDataUser->get($row->id, collect())->get((int) $m[1]);
                             $rowData[] = ($label !== null && $label !== '') ? $label : '-';
+                        } elseif ($col === 'first_annotator') {
+                            $rowData[] = $firstAnnotatorsExport->get($row->id, '-');
                         } elseif ($col === 'llm_label') {
                             $rowData[] = $llmLabels->get($row->id, '-') ?? '-';
                         } elseif ($col === 'packages_count') {
