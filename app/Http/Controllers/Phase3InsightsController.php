@@ -320,17 +320,32 @@ class Phase3InsightsController extends Controller
 
         // ── Per-run summary table ─────────────────────────────────────────────
 
-        $runSummaries = $runs->map(function ($run) use ($phase3DataIdsByPackage, $annotsByItemKey, $screeningsByItemKey) {
+        $runSummaries = $runs->map(function ($run) use ($phase3DataIdsByPackage, $annotsByItemKey, $screeningsByItemKey, $phase1Annotations, $phase3ToSource) {
             $pkgDataIds = $phase3DataIdsByPackage[$run->phase3_package_id] ?? collect();
             $total      = $pkgDataIds->count();
             $fullyDone  = 0;
             $started    = 0;
 
+            $srcPkgId = $phase3ToSource[$run->phase3_package_id] ?? null;
+
             foreach ($pkgDataIds as $dataId) {
-                $key   = $dataId . '|' . $run->phase3_package_id;
-                $count = isset($annotsByItemKey[$key]) ? $annotsByItemKey[$key]->count() : 0;
-                if ($count >= 3) $fullyDone++;
-                if ($count >= 1) $started++;
+                $p3Key = $dataId . '|' . $run->phase3_package_id;
+                $p1Key = $srcPkgId ? ($dataId . '|' . $srcPkgId) : null;
+
+                $p1Users = $p1Key && isset($phase1Annotations[$p1Key])
+                    ? $phase1Annotations[$p1Key]->pluck('user_id')
+                    : collect();
+
+                $p3Users = isset($annotsByItemKey[$p3Key])
+                    ? $annotsByItemKey[$p3Key]->pluck('user_id')
+                    : collect();
+
+                $distinctCount = $p1Users->merge($p3Users)->unique()->count();
+
+                // Consistent with progressBuckets: "complete" = 3 distinct users total
+                if ($distinctCount >= 3) $fullyDone++;
+                // "started" = at least one Phase 3 annotation exists
+                if ($p3Users->isNotEmpty()) $started++;
             }
 
             return [
