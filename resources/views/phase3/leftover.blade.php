@@ -57,12 +57,10 @@
                 </div>
                 <div class="card-body pt-2">
                     <p class="small text-muted mb-0">
-                        These are Phase 3 data items that have
-                        <strong>not been assigned to any annotator yet</strong>
-                        (not in any Phase 3 package with user assignments) and still need
-                        <strong>{{ $contentdata['annotatorRoleCount'] }} annotator{{ $contentdata['annotatorRoleCount'] !== 1 ? 's' : '' }}</strong>
-                        to fully annotate them.
-                        Select the items below and create a new <em>Phase 3</em> package so they can be assigned.
+                        These are Phase 3 data items that have been identified for re-annotation
+                        but are <strong>not yet fully annotated</strong> by all
+                        <strong>{{ $contentdata['annotatorRoleCount'] }} annotator{{ $contentdata['annotatorRoleCount'] !== 1 ? 's' : '' }}</strong>.
+                        Select the items below and create a new <em>Phase 3</em> package so they can be assigned to annotators.
                     </p>
                 </div>
             </div>
@@ -71,24 +69,47 @@
         {{-- ── FILTER & ACTION BAR ──────────────────────────────── --}}
         <div class="col-12">
             <div class="card border-0 bg-label-secondary">
-                <div class="card-body py-3 d-flex align-items-center gap-3 flex-wrap justify-content-between">
-                    {{-- Sub-filter by annotator count --}}
-                    <div class="d-flex align-items-center gap-2 flex-wrap">
-                        <span class="small fw-semibold text-muted me-1">Filter:</span>
-                        <button class="btn btn-sm btn-label-secondary annotator-filter-btn active" data-count="">All</button>
-                        @foreach($contentdata['byAnnotatorCount'] as $cnt => $total)
-                        <button class="btn btn-sm btn-label-{{ $cnt === 0 ? 'danger' : ($cnt === 1 ? 'warning' : 'info') }} annotator-filter-btn" data-count="{{ $cnt }}">
-                            {{ $cnt }} annotator{{ $cnt !== 1 ? 's' : '' }}
-                            <span class="badge bg-white text-dark ms-1">{{ $total }}</span>
-                        </button>
-                        @endforeach
+                <div class="card-body py-3">
+                    <div class="d-flex align-items-center gap-3 flex-wrap justify-content-between mb-2">
+                        {{-- Sub-filter by annotator count --}}
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <span class="small fw-semibold text-muted me-1">Annotators:</span>
+                            <button class="btn btn-sm btn-label-secondary annotator-filter-btn active" data-count="">All</button>
+                            @foreach($contentdata['byAnnotatorCount'] as $cnt => $total)
+                            <button class="btn btn-sm btn-label-{{ $cnt === 0 ? 'danger' : ($cnt === 1 ? 'warning' : 'info') }} annotator-filter-btn" data-count="{{ $cnt }}">
+                                {{ $cnt }} annotator{{ $cnt !== 1 ? 's' : '' }}
+                                <span class="badge bg-white text-dark ms-1">{{ $total }}</span>
+                            </button>
+                            @endforeach
+                        </div>
+                        {{-- Selection actions --}}
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <button class="btn btn-sm btn-label-primary" id="selectAllVisibleBtn">Select Visible</button>
+                            <button class="btn btn-sm btn-label-primary" id="selectAllMatchingBtn">Select All Matching</button>
+                            <button class="btn btn-sm btn-label-secondary" id="deselectAllBtn">Deselect All</button>
+                            <span class="badge bg-primary ms-1" id="selectedCountBadge">0 selected</span>
+                        </div>
                     </div>
-                    {{-- Selection actions --}}
-                    <div class="d-flex align-items-center gap-2 flex-wrap">
-                        <button class="btn btn-sm btn-label-primary" id="selectAllVisibleBtn">Select Visible</button>
-                        <button class="btn btn-sm btn-label-primary" id="selectAllMatchingBtn">Select All Matching</button>
-                        <button class="btn btn-sm btn-label-secondary" id="deselectAllBtn">Deselect All</button>
-                        <span class="badge bg-primary ms-1" id="selectedCountBadge">0 selected</span>
+                    {{-- Disagree with LLM filters --}}
+                    <div class="d-flex align-items-center gap-3 flex-wrap border-top pt-2 mt-1">
+                        <span class="small fw-semibold text-muted me-1">Disagree with LLM:</span>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input disagree-filter-toggle" type="checkbox" id="disagree1Toggle" role="switch" data-param="disagree_1">
+                            <label class="form-check-label small" for="disagree1Toggle">
+                                1 annotator disagrees
+                                <span class="badge bg-label-warning ms-1">{{ $contentdata['disagreeStats'][1] ?? 0 }}</span>
+                            </label>
+                        </div>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input disagree-filter-toggle" type="checkbox" id="disagree2Toggle" role="switch" data-param="disagree_2">
+                            <label class="form-check-label small" for="disagree2Toggle">
+                                2 annotators disagree
+                                <span class="badge bg-label-danger ms-1">{{ $contentdata['disagreeStats'][2] ?? 0 }}</span>
+                            </label>
+                        </div>
+                        <span class="text-muted small">
+                            <i class="ti ti-info-circle me-1"></i>Compares human label (Normal vs non-Normal) against LLM label.
+                        </span>
                     </div>
                 </div>
             </div>
@@ -125,6 +146,7 @@
                                 <th>ID</th>
                                 <th>Content</th>
                                 <th>Annotators</th>
+                                <th>LLM Disagree</th>
                                 <th>Done By</th>
                                 <th>Created At</th>
                             </tr>
@@ -196,6 +218,8 @@ $(document).ready(function () {
             dataSrc: 'data',
             data: function (d) {
                 d.annotator_count_filter = currentAnnotatorFilter;
+                d.disagree_1 = $('#disagree1Toggle').is(':checked') ? 1 : 0;
+                d.disagree_2 = $('#disagree2Toggle').is(':checked') ? 1 : 0;
             }
         },
         columns: [
@@ -218,6 +242,14 @@ $(document).ready(function () {
                     const colorMap = { 0: 'danger', 1: 'warning', 2: 'info' };
                     const color = colorMap[val] || 'secondary';
                     return '<span class="badge bg-label-' + color + '">' + val + ' / {{ $contentdata['annotatorRoleCount'] }}</span>';
+                }
+            },
+            {
+                data: 'llm_disagree_count', name: 'llm_disagree_count', orderable: false, searchable: false,
+                render: function (val) {
+                    if (val === 0 || val === null) return '<span class="text-muted">—</span>';
+                    const color = val >= 2 ? 'danger' : 'warning';
+                    return '<span class="badge bg-label-' + color + '">' + val + ' disagree</span>';
                 }
             },
             {
@@ -304,19 +336,23 @@ $(document).ready(function () {
 
     // Select all matching current filter (uses pre-loaded IDs from server)
     $('#selectAllMatchingBtn').on('click', function () {
-        // Determine which IDs match the current annotator filter
-        // allLeftoverIds is the full unfiltered list; for a sub-filter we rely on
-        // the server — so we reload all IDs from a quick AJAX call filtered by count.
-        if (currentAnnotatorFilter === '') {
+        const disagree1 = $('#disagree1Toggle').is(':checked') ? 1 : 0;
+        const disagree2 = $('#disagree2Toggle').is(':checked') ? 1 : 0;
+        const hasAnyFilter = currentAnnotatorFilter !== '' || disagree1 || disagree2;
+
+        if (!hasAnyFilter) {
+            // No filters active — use the pre-loaded full list
             allLeftoverIds.forEach(id => selectedIds.add(id));
             updateSelectionUI();
         } else {
-            // Fetch filtered IDs via existing table endpoint with a large page
+            // Fetch all matching IDs from the server with all active filters
             $.getJSON(tableUrl, {
                 draw: 0,
                 start: 0,
                 length: 99999,
-                annotator_count_filter: currentAnnotatorFilter
+                annotator_count_filter: currentAnnotatorFilter,
+                disagree_1: disagree1,
+                disagree_2: disagree2,
             }, function (res) {
                 (res.data || []).forEach(function (row) { selectedIds.add(row.id); });
                 updateSelectionUI();
@@ -335,6 +371,11 @@ $(document).ready(function () {
         $('.annotator-filter-btn').removeClass('active');
         $(this).addClass('active');
         currentAnnotatorFilter = $(this).data('count').toString();
+        dataTable.ajax.reload(null, true);
+    });
+
+    // ── Disagree with LLM filter toggles ─────────────────────────────────
+    $('.disagree-filter-toggle').on('change', function () {
         dataTable.ajax.reload(null, true);
     });
 

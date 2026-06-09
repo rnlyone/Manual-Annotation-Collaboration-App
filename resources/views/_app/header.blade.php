@@ -8,6 +8,7 @@
 
     <meta name="description" content="Annotation App" />
     <meta name="keywords" content="Annotation App">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
 
     <!-- Favicon -->
     <link rel="icon" type="image/x-icon" href="/assets/img/favicon/favicon.ico" />
