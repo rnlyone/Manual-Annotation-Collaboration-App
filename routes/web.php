@@ -55,6 +55,11 @@ Route::middleware('auth')->group(function () {
         // Phase 3 — Insights Dashboard
         Route::get('phase3/insights', [\App\Http\Controllers\Phase3InsightsController::class, 'index'])->name('phase3.insights');
 
+        // Phase 3 — Leftover Data
+        Route::get('phase3/leftover', [\App\Http\Controllers\Phase3LeftoverController::class, 'index'])->name('phase3.leftover');
+        Route::get('phase3/leftover/table', [\App\Http\Controllers\Phase3LeftoverController::class, 'tableData'])->name('phase3.leftover.table');
+        Route::post('phase3/leftover/create-package', [\App\Http\Controllers\Phase3LeftoverController::class, 'createPackage'])->name('phase3.leftover.create-package');
+
         Route::resource('data', \App\Http\Controllers\DataController::class);
         Route::resource('users', \App\Http\Controllers\UserController::class);
         Route::resource('categories', \App\Http\Controllers\CategoryController::class);
