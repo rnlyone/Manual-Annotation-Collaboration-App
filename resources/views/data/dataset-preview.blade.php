@@ -90,6 +90,43 @@
             </div>
         </div>
 
+        {{-- Filter: incomplete phase 3 --}}
+        <div class="col-12">
+            <div class="card border-0 bg-label-warning">
+                <div class="card-body py-3">
+                    <div class="d-flex align-items-center gap-3 flex-wrap">
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" id="incompletePhase3Toggle" role="switch">
+                            <label class="form-check-label fw-semibold" for="incompletePhase3Toggle">
+                                Incomplete Phase 3 Only
+                            </label>
+                        </div>
+                        <span class="text-body-secondary small">
+                            Show only Phase 3 data not yet annotated by
+                            <strong>all {{ $contentdata['annotatorRoleCount'] }} annotator{{ $contentdata['annotatorRoleCount'] !== 1 ? 's' : '' }}</strong>.
+                            Optionally narrow by exact annotator count.
+                        </span>
+                    </div>
+                    <div id="phase3SubFilter" class="mt-2 ps-1 d-none">
+                        <div class="d-flex gap-4 flex-wrap">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="phase3AnnotatorsCount" id="phase3AnyIncomplete" value="0" checked>
+                                <label class="form-check-label small" for="phase3AnyIncomplete">All incomplete</label>
+                            </div>
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="phase3AnnotatorsCount" id="phase3OneAnnotator" value="1">
+                                <label class="form-check-label small" for="phase3OneAnnotator">1 annotator only</label>
+                            </div>
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="phase3AnnotatorsCount" id="phase3TwoAnnotators" value="2">
+                                <label class="form-check-label small" for="phase3TwoAnnotators">2 annotators only</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         {{-- Column Picker --}}
         <div class="col-12">
             <div class="card">
@@ -291,6 +328,8 @@ $(document).ready(function () {
             dataSrc: 'data',
             data: function (d) {
                 d.complete_only = $('#completeOnlyToggle').is(':checked') ? 1 : 0;
+                d.incomplete_phase3 = $('#incompletePhase3Toggle').is(':checked') ? 1 : 0;
+                d.phase3_annotators_count = $('input[name="phase3AnnotatorsCount"]:checked').val() || 0;
             }
         },
         columns: allColumns,
@@ -322,7 +361,29 @@ $(document).ready(function () {
 
     // Complete annotation filter toggle
     $('#completeOnlyToggle').on('change', function () {
+        if (this.checked) {
+            $('#incompletePhase3Toggle').prop('checked', false);
+            $('#phase3SubFilter').addClass('d-none');
+        }
         dataTable.ajax.reload(null, true);
+    });
+
+    // Incomplete Phase 3 filter toggle
+    $('#incompletePhase3Toggle').on('change', function () {
+        if (this.checked) {
+            $('#completeOnlyToggle').prop('checked', false);
+            $('#phase3SubFilter').removeClass('d-none');
+        } else {
+            $('#phase3SubFilter').addClass('d-none');
+        }
+        dataTable.ajax.reload(null, true);
+    });
+
+    // Sub-filter radio buttons
+    $('input[name="phase3AnnotatorsCount"]').on('change', function () {
+        if ($('#incompletePhase3Toggle').is(':checked')) {
+            dataTable.ajax.reload(null, true);
+        }
     });
 
     // Toggle columns

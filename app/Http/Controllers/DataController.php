@@ -473,6 +473,50 @@ class DataController extends Controller
             }
         }
 
+        // --- Incomplete Phase 3 filter --------------------------------------
+        // Shows data that passed to phase 3 but has fewer than annotatorRoleCount
+        // distinct annotator-role users. Sub-filter: exact count (1 or 2).
+        $incompletePhase3      = $request->boolean('incomplete_phase3');
+        $phase3AnnotatorsCount = (int) $request->input('phase3_annotators_count', 0);
+
+        if ($incompletePhase3) {
+            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
+            $annotatorRoleCount = $annotatorRoleIds->count();
+
+            // All data IDs that belong to a phase3 package
+            $phase3DataIds = DB::table('package_data')
+                ->join('packages', 'packages.id', '=', 'package_data.package_id')
+                ->where('packages.type', 'phase3')
+                ->pluck('package_data.data_id')
+                ->unique();
+
+            if ($phase3DataIds->isEmpty() || $annotatorRoleCount === 0) {
+                $filteredQuery->whereRaw('1 = 0');
+            } else {
+                // Count distinct annotator-role users per data_id (any package, mirrors phase3 insights)
+                $annotationCounts = DB::table('annotations')
+                    ->whereIn('data_id', $phase3DataIds)
+                    ->whereIn('user_id', $annotatorRoleIds)
+                    ->select('data_id', DB::raw('COUNT(DISTINCT user_id) as annotator_count'))
+                    ->groupBy('data_id')
+                    ->pluck('annotator_count', 'data_id');
+
+                $targetDataIds = $phase3DataIds->filter(function ($dataId) use ($annotationCounts, $annotatorRoleCount, $phase3AnnotatorsCount) {
+                    $count = (int) $annotationCounts->get($dataId, 0);
+                    if ($phase3AnnotatorsCount > 0) {
+                        return $count === $phase3AnnotatorsCount;
+                    }
+                    return $count < $annotatorRoleCount;
+                })->values();
+
+                if ($targetDataIds->isEmpty()) {
+                    $filteredQuery->whereRaw('1 = 0');
+                } else {
+                    $filteredQuery->whereIn('id', $targetDataIds->all());
+                }
+            }
+        }
+
         $searchValue = $request->input('search.value');
         if ($searchValue) {
             $filteredQuery->where(function ($q) use ($searchValue) {
