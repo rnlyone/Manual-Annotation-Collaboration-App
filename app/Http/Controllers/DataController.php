@@ -393,6 +393,84 @@ class DataController extends Controller
     }
 
     /**
+     * Build a filtered Eloquent query for the dataset preview/export.
+     *
+     * Applies complete_only, incomplete_phase3 and search filters.
+     * Handles both DataTables format (search[value]) and plain GET (search=…).
+     * The caller is responsible for column selection, ordering and pagination.
+     */
+    private function buildDatasetFilteredQuery(Request $request): \Illuminate\Database\Eloquent\Builder
+    {
+        $query = Data::query()->select(['id', 'content', 'created_at', 'updated_at']);
+
+        // ── Complete annotation filter ──────────────────────────────────────
+        if ($request->boolean('complete_only')) {
+            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
+            $annotatorRoleCount = $annotatorRoleIds->count();
+
+            if ($annotatorRoleCount > 0) {
+                $query->whereIn('id', function ($sub) use ($annotatorRoleIds, $annotatorRoleCount) {
+                    $sub->select('data_id')
+                        ->from('annotations')
+                        ->whereIn('user_id', $annotatorRoleIds)
+                        ->groupBy('data_id')
+                        ->havingRaw('COUNT(DISTINCT user_id) >= ?', [$annotatorRoleCount]);
+                });
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+        }
+
+        // ── Incomplete Phase 3 filter ───────────────────────────────────────
+        if ($request->boolean('incomplete_phase3')) {
+            $annotatorRoleIds      = User::where('role', 'annotator')->pluck('id');
+            $annotatorRoleCount    = $annotatorRoleIds->count();
+            $phase3AnnotatorsCount = (int) $request->input('phase3_annotators_count', 0);
+
+            $phase3DataIds = DB::table('package_data')
+                ->join('packages', 'packages.id', '=', 'package_data.package_id')
+                ->where('packages.type', 'phase3')
+                ->pluck('package_data.data_id')
+                ->unique();
+
+            if ($phase3DataIds->isEmpty() || $annotatorRoleCount === 0) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $annotationCounts = DB::table('annotations')
+                    ->whereIn('data_id', $phase3DataIds)
+                    ->whereIn('user_id', $annotatorRoleIds)
+                    ->select('data_id', DB::raw('COUNT(DISTINCT user_id) as annotator_count'))
+                    ->groupBy('data_id')
+                    ->pluck('annotator_count', 'data_id');
+
+                $targetDataIds = $phase3DataIds->filter(function ($dataId) use ($annotationCounts, $annotatorRoleCount, $phase3AnnotatorsCount) {
+                    $count = (int) $annotationCounts->get($dataId, 0);
+                    return $phase3AnnotatorsCount > 0
+                        ? $count === $phase3AnnotatorsCount
+                        : $count < $annotatorRoleCount;
+                })->values();
+
+                // whereRaw('1=0') is cleaner than a fake ID for the empty case
+                $targetDataIds->isEmpty()
+                    ? $query->whereRaw('1 = 0')
+                    : $query->whereIn('id', $targetDataIds->all());
+            }
+        }
+
+        // ── Search ─────────────────────────────────────────────────────────
+        // DataTables sends search[value]; plain export URL sends search=…
+        $searchValue = trim((string) ($request->input('search.value') ?: $request->input('search', '')));
+        if ($searchValue !== '') {
+            $query->where(function ($q) use ($searchValue) {
+                $q->where('id', 'like', "%{$searchValue}%")
+                    ->orWhere('content', 'like', "%{$searchValue}%");
+            });
+        }
+
+        return $query;
+    }
+
+    /**
      * Dataset preview page.
      */
     public function datasetPreview()
@@ -446,84 +524,10 @@ class DataController extends Controller
             4 => 'updated_at',
         ];
 
-        $baseQuery = Data::query()
-            ->select(['id', 'content', 'created_at', 'updated_at'])
+        $recordsTotal  = Data::count();
+
+        $filteredQuery = $this->buildDatasetFilteredQuery($request)
             ->withCount(['packageAssignments as packages_count']);
-
-        $recordsTotal  = (clone $baseQuery)->count();
-        $filteredQuery = clone $baseQuery;
-
-        // --- Complete annotation filter --------------------------------------
-        $completeOnly = $request->boolean('complete_only');
-        if ($completeOnly) {
-            $annotatorRoleIds    = User::where('role', 'annotator')->pluck('id');
-            $annotatorRoleCount  = $annotatorRoleIds->count();
-
-            if ($annotatorRoleCount > 0) {
-                $filteredQuery->whereIn('id', function ($sub) use ($annotatorRoleIds, $annotatorRoleCount) {
-                    $sub->select('data_id')
-                        ->from('annotations')
-                        ->whereIn('user_id', $annotatorRoleIds)
-                        ->groupBy('data_id')
-                        ->havingRaw('COUNT(DISTINCT user_id) >= ?', [$annotatorRoleCount]);
-                });
-            } else {
-                // No annotators exist — return empty result set
-                $filteredQuery->whereRaw('1 = 0');
-            }
-        }
-
-        // --- Incomplete Phase 3 filter --------------------------------------
-        // Shows data that passed to phase 3 but has fewer than annotatorRoleCount
-        // distinct annotator-role users. Sub-filter: exact count (1 or 2).
-        $incompletePhase3      = $request->boolean('incomplete_phase3');
-        $phase3AnnotatorsCount = (int) $request->input('phase3_annotators_count', 0);
-
-        if ($incompletePhase3) {
-            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
-            $annotatorRoleCount = $annotatorRoleIds->count();
-
-            // All data IDs that belong to a phase3 package
-            $phase3DataIds = DB::table('package_data')
-                ->join('packages', 'packages.id', '=', 'package_data.package_id')
-                ->where('packages.type', 'phase3')
-                ->pluck('package_data.data_id')
-                ->unique();
-
-            if ($phase3DataIds->isEmpty() || $annotatorRoleCount === 0) {
-                $filteredQuery->whereRaw('1 = 0');
-            } else {
-                // Count distinct annotator-role users per data_id (any package, mirrors phase3 insights)
-                $annotationCounts = DB::table('annotations')
-                    ->whereIn('data_id', $phase3DataIds)
-                    ->whereIn('user_id', $annotatorRoleIds)
-                    ->select('data_id', DB::raw('COUNT(DISTINCT user_id) as annotator_count'))
-                    ->groupBy('data_id')
-                    ->pluck('annotator_count', 'data_id');
-
-                $targetDataIds = $phase3DataIds->filter(function ($dataId) use ($annotationCounts, $annotatorRoleCount, $phase3AnnotatorsCount) {
-                    $count = (int) $annotationCounts->get($dataId, 0);
-                    if ($phase3AnnotatorsCount > 0) {
-                        return $count === $phase3AnnotatorsCount;
-                    }
-                    return $count < $annotatorRoleCount;
-                })->values();
-
-                if ($targetDataIds->isEmpty()) {
-                    $filteredQuery->whereRaw('1 = 0');
-                } else {
-                    $filteredQuery->whereIn('id', $targetDataIds->all());
-                }
-            }
-        }
-
-        $searchValue = $request->input('search.value');
-        if ($searchValue) {
-            $filteredQuery->where(function ($q) use ($searchValue) {
-                $q->where('id', 'like', "%{$searchValue}%")
-                    ->orWhere('content', 'like', "%{$searchValue}%");
-            });
-        }
 
         $recordsFiltered = (clone $filteredQuery)->count();
 
@@ -541,7 +545,7 @@ class DataController extends Controller
         }
         $orderDirection = $request->input('order.0.dir', 'desc') === 'asc' ? 'asc' : 'desc';
 
-        $dataItems = $filteredQuery
+        $dataItems = (clone $filteredQuery)
             ->orderBy($orderColumn, $orderDirection)
             ->skip($start)
             ->take($length)
@@ -550,8 +554,8 @@ class DataController extends Controller
         $dataIds = $dataItems->pluck('id');
 
         // --- All annotator user IDs (for consistent column structure) ---------
-        $allAnnotatorIds = Annotation::distinct()->pluck('user_id');
-        $categories      = Category::pluck('name', 'id');
+        $allAnnotatorIds  = Annotation::distinct()->pluck('user_id');
+        $categories       = Category::pluck('name', 'id');
         $annotsByDataUser = collect();
 
         if ($dataIds->isNotEmpty()) {
@@ -583,8 +587,7 @@ class DataController extends Controller
                 ->map(fn ($g) => $g->first()->llm_label);
         }
 
-        // --- Phase-1 annotator IDs per data_id (annotation linked to LLM screening) ---
-        // These are the users whose annotation was the input to Phase 2 LLM screening.
+        // --- Phase-1 annotator IDs per data_id --------------------------------
         $phase1AnnotatorsByData = collect();
         if ($dataIds->isNotEmpty()) {
             $screenedAnnotationIds = AiScreening::whereIn('data_id', $dataIds)
@@ -601,7 +604,7 @@ class DataController extends Controller
             }
         }
 
-        // --- First annotator per data_id (earliest annotation by created_at) ---
+        // --- First annotator per data_id --------------------------------------
         $firstAnnotatorNames = collect();
         if ($dataIds->isNotEmpty()) {
             $firstAnnotByData = Annotation::whereIn('data_id', $dataIds)
@@ -617,7 +620,7 @@ class DataController extends Controller
                 ->map(fn ($userId) => $userNameMap->get($userId, '-'));
         }
 
-        // --- Phase 3 membership per data_id ------------------------------------
+        // --- Phase 3 membership per data_id -----------------------------------
         $phase3DataIdSet = collect();
         if ($dataIds->isNotEmpty()) {
             $phase3DataIdSet = DB::table('package_data')
@@ -664,13 +667,16 @@ class DataController extends Controller
 
     /**
      * Export dataset as CSV with customizable columns (base + annotator labels + LLM label).
+     *
+     * Uses the same buildDatasetFilteredQuery() as the preview table so the
+     * exported row count always matches recordsFiltered shown in the UI.
      */
     public function datasetExport(Request $request)
     {
         $baseAllowed = ['id', 'content', 'created_at', 'updated_at', 'packages_count', 'llm_label', 'first_annotator', 'phase3_data'];
 
-        $rawColumns     = $request->input('columns', 'id,content,created_at,updated_at');
-        $requestedCols  = array_map('trim', explode(',', $rawColumns));
+        $rawColumns    = $request->input('columns', 'id,content,created_at,updated_at');
+        $requestedCols = array_map('trim', explode(',', $rawColumns));
 
         $columns = array_values(array_filter(
             $requestedCols,
@@ -685,88 +691,22 @@ class DataController extends Controller
         $includeLlmLabel       = in_array('llm_label', $columns, true);
         $includeFirstAnnotator = in_array('first_annotator', $columns, true);
         $includePhase3Data     = in_array('phase3_data', $columns, true);
-        $annotatorCols        = array_values(array_filter($columns, fn ($c) => preg_match('/^annotator_\d+$/', $c)));
-        $annotatorUserIds     = collect($annotatorCols)
+        $annotatorCols         = array_values(array_filter($columns, fn ($c) => preg_match('/^annotator_\d+$/', $c)));
+        $annotatorUserIds      = collect($annotatorCols)
             ->map(fn ($c) => (int) str_replace('annotator_', '', $c))
             ->filter()
             ->values();
 
-        $dbCols = array_values(array_unique(array_merge(
-            ['id', 'created_at'],
-            array_filter($columns, fn ($c) => in_array($c, ['id', 'content', 'created_at', 'updated_at'], true))
-        )));
-
-        $query = Data::query()->select($dbCols);
+        // ── Same filtered query as the preview table ────────────────────────
+        $query = $this->buildDatasetFilteredQuery($request);
         if ($includePackagesCount) {
             $query->withCount(['packageAssignments as packages_count']);
-        }
-
-        // --- Apply the same filters as the preview ----------------------------
-
-        $completeOnly = $request->boolean('complete_only');
-        if ($completeOnly) {
-            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
-            $annotatorRoleCount = $annotatorRoleIds->count();
-            if ($annotatorRoleCount > 0) {
-                $query->whereIn('id', function ($sub) use ($annotatorRoleIds, $annotatorRoleCount) {
-                    $sub->select('data_id')
-                        ->from('annotations')
-                        ->whereIn('user_id', $annotatorRoleIds)
-                        ->groupBy('data_id')
-                        ->havingRaw('COUNT(DISTINCT user_id) >= ?', [$annotatorRoleCount]);
-                });
-            } else {
-                $query->whereRaw('1 = 0');
-            }
-        }
-
-        $incompletePhase3      = $request->boolean('incomplete_phase3');
-        $phase3AnnotatorsCount = (int) $request->input('phase3_annotators_count', 0);
-        if ($incompletePhase3) {
-            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
-            $annotatorRoleCount = $annotatorRoleIds->count();
-
-            $phase3DataIds = DB::table('package_data')
-                ->join('packages', 'packages.id', '=', 'package_data.package_id')
-                ->where('packages.type', 'phase3')
-                ->pluck('package_data.data_id')
-                ->unique();
-
-            if ($phase3DataIds->isEmpty() || $annotatorRoleCount === 0) {
-                $query->whereRaw('1 = 0');
-            } else {
-                $annotationCounts = DB::table('annotations')
-                    ->whereIn('data_id', $phase3DataIds)
-                    ->whereIn('user_id', $annotatorRoleIds)
-                    ->select('data_id', DB::raw('COUNT(DISTINCT user_id) as annotator_count'))
-                    ->groupBy('data_id')
-                    ->pluck('annotator_count', 'data_id');
-
-                $targetDataIds = $phase3DataIds->filter(function ($dataId) use ($annotationCounts, $annotatorRoleCount, $phase3AnnotatorsCount) {
-                    $count = (int) $annotationCounts->get($dataId, 0);
-                    return $phase3AnnotatorsCount > 0
-                        ? $count === $phase3AnnotatorsCount
-                        : $count < $annotatorRoleCount;
-                })->values();
-
-                $query->whereIn('id', $targetDataIds->isEmpty() ? ['__none__'] : $targetDataIds->all());
-            }
-        }
-
-        // ----------------------------------------------------------------------
-
-        $searchValue = trim((string) $request->input('search', ''));
-        if ($searchValue !== '') {
-            $query->where(function ($q) use ($searchValue) {
-                $q->where('id', 'like', "%{$searchValue}%")
-                    ->orWhere('content', 'like', "%{$searchValue}%");
-            });
         }
 
         $dataItems = $query->orderBy('created_at', 'desc')->get();
         $dataIds   = $dataItems->pluck('id');
 
-        // Resolve annotator names for headers
+        // ── Resolve computed column data ─────────────────────────────────────
         $annotatorNames = $annotatorUserIds->isNotEmpty()
             ? User::whereIn('id', $annotatorUserIds)->pluck('name', 'id')
             : collect();
@@ -775,12 +715,13 @@ class DataController extends Controller
             if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
                 return $annotatorNames->get((int) $m[1], 'Annotator ' . $m[1]);
             }
-            if ($col === 'first_annotator') return 'First Annotator';
-            if ($col === 'phase3_data') return 'Phase 3 Data';
-            return $col;
+            return match ($col) {
+                'first_annotator' => 'First Annotator',
+                'phase3_data'     => 'Phase 3 Data',
+                default           => $col,
+            };
         })->all();
 
-        // Annotator label lookup
         $annotsByDataUser = collect();
         if ($dataIds->isNotEmpty() && $annotatorUserIds->isNotEmpty()) {
             $categories  = Category::pluck('name', 'id');
@@ -794,15 +735,13 @@ class DataController extends Controller
                     $items->groupBy('user_id')->map(function ($userAnnots) use ($categories) {
                         $catIds = collect($userAnnots)
                             ->flatMap(fn ($a) => $a->category_ids ?? [])
-                            ->unique()
-                            ->values();
+                            ->unique()->values();
                         $labels = $catIds->map(fn ($id) => $categories->get($id) ?? (string) $id)->filter();
                         return $labels->isEmpty() ? '-' : $labels->implode(' | ');
                     })
                 );
         }
 
-        // LLM label lookup
         $llmLabels = collect();
         if ($dataIds->isNotEmpty() && $includeLlmLabel) {
             $llmLabels = AiScreening::whereIn('data_id', $dataIds)
@@ -813,7 +752,6 @@ class DataController extends Controller
                 ->map(fn ($g) => $g->first()->llm_label);
         }
 
-        // First annotator lookup
         $firstAnnotatorsExport = collect();
         if ($dataIds->isNotEmpty() && $includeFirstAnnotator) {
             $firstAnnotByData = Annotation::whereIn('data_id', $dataIds)
@@ -829,7 +767,6 @@ class DataController extends Controller
                 ->map(fn ($userId) => $userNameMap->get($userId, '-'));
         }
 
-        // Phase 3 membership lookup
         $phase3DataIdSetExport = collect();
         if ($dataIds->isNotEmpty() && $includePhase3Data) {
             $phase3DataIdSetExport = DB::table('package_data')
@@ -837,8 +774,7 @@ class DataController extends Controller
                 ->where('packages.type', 'phase3')
                 ->whereIn('package_data.data_id', $dataIds->all())
                 ->pluck('package_data.data_id')
-                ->unique()
-                ->flip();
+                ->unique()->flip();
         }
 
         $timestamp = Carbon::now()->format('Ymd-His');
