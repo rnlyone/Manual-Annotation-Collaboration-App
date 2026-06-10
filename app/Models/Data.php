@@ -12,7 +12,7 @@ class Data extends Model
     /** @use HasFactory<\Database\Factories\DataFactory> */
     use HasFactory;
 
-    /**
+/**
      * Indicates if the IDs are auto-incrementing.
      */
     public $incrementing = false;

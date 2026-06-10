@@ -411,6 +411,13 @@ $(document).ready(function () {
         const params = new URLSearchParams({ columns: selectedCols.join(',') });
         const sv = dataTable.search();
         if (sv) params.set('search', sv);
+        // Forward active filter state so the export matches the preview
+        if ($('#completeOnlyToggle').is(':checked'))      params.set('complete_only', '1');
+        if ($('#incompletePhase3Toggle').is(':checked')) {
+            params.set('incomplete_phase3', '1');
+            const countVal = $('input[name="phase3AnnotatorsCount"]:checked').val();
+            if (countVal && countVal !== '0') params.set('phase3_annotators_count', countVal);
+        }
         window.location.href = exportUrl + '?' + params.toString();
     });
 });

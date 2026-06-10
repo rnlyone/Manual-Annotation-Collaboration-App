@@ -701,6 +701,60 @@ class DataController extends Controller
             $query->withCount(['packageAssignments as packages_count']);
         }
 
+        // --- Apply the same filters as the preview ----------------------------
+
+        $completeOnly = $request->boolean('complete_only');
+        if ($completeOnly) {
+            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
+            $annotatorRoleCount = $annotatorRoleIds->count();
+            if ($annotatorRoleCount > 0) {
+                $query->whereIn('id', function ($sub) use ($annotatorRoleIds, $annotatorRoleCount) {
+                    $sub->select('data_id')
+                        ->from('annotations')
+                        ->whereIn('user_id', $annotatorRoleIds)
+                        ->groupBy('data_id')
+                        ->havingRaw('COUNT(DISTINCT user_id) >= ?', [$annotatorRoleCount]);
+                });
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+        }
+
+        $incompletePhase3      = $request->boolean('incomplete_phase3');
+        $phase3AnnotatorsCount = (int) $request->input('phase3_annotators_count', 0);
+        if ($incompletePhase3) {
+            $annotatorRoleIds   = User::where('role', 'annotator')->pluck('id');
+            $annotatorRoleCount = $annotatorRoleIds->count();
+
+            $phase3DataIds = DB::table('package_data')
+                ->join('packages', 'packages.id', '=', 'package_data.package_id')
+                ->where('packages.type', 'phase3')
+                ->pluck('package_data.data_id')
+                ->unique();
+
+            if ($phase3DataIds->isEmpty() || $annotatorRoleCount === 0) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $annotationCounts = DB::table('annotations')
+                    ->whereIn('data_id', $phase3DataIds)
+                    ->whereIn('user_id', $annotatorRoleIds)
+                    ->select('data_id', DB::raw('COUNT(DISTINCT user_id) as annotator_count'))
+                    ->groupBy('data_id')
+                    ->pluck('annotator_count', 'data_id');
+
+                $targetDataIds = $phase3DataIds->filter(function ($dataId) use ($annotationCounts, $annotatorRoleCount, $phase3AnnotatorsCount) {
+                    $count = (int) $annotationCounts->get($dataId, 0);
+                    return $phase3AnnotatorsCount > 0
+                        ? $count === $phase3AnnotatorsCount
+                        : $count < $annotatorRoleCount;
+                })->values();
+
+                $query->whereIn('id', $targetDataIds->isEmpty() ? ['__none__'] : $targetDataIds->all());
+            }
+        }
+
+        // ----------------------------------------------------------------------
+
         $searchValue = trim((string) $request->input('search', ''));
         if ($searchValue !== '') {
             $query->where(function ($q) use ($searchValue) {
