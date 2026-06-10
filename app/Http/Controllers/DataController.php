@@ -708,8 +708,9 @@ class DataController extends Controller
             $query->withCount(['packageAssignments as packages_count']);
         }
 
-        $dataItems = $query->orderBy('created_at', 'desc')->get();
-        $dataIds   = $dataItems->pluck('id');
+        // id tiebreaker keeps chunked offset pagination stable when
+        // created_at values collide (no skipped/duplicated rows).
+        $query->orderBy('created_at', 'desc')->orderBy('id', 'desc');
 
         // ── Resolve computed column data ─────────────────────────────────────
         $annotatorNames = $annotatorUserIds->isNotEmpty()
@@ -727,91 +728,112 @@ class DataController extends Controller
             };
         })->all();
 
-        $annotsByDataUser = collect();
-        if ($dataIds->isNotEmpty() && $annotatorUserIds->isNotEmpty()) {
-            $categories  = Category::pluck('name', 'id');
-            $annotations = Annotation::whereIn('data_id', $dataIds)
-                ->whereIn('user_id', $annotatorUserIds)
-                ->get(['data_id', 'user_id', 'category_ids']);
-
-            $annotsByDataUser = $annotations
-                ->groupBy('data_id')
-                ->map(fn ($items) =>
-                    $items->groupBy('user_id')->map(function ($userAnnots) use ($categories) {
-                        $catIds = collect($userAnnots)
-                            ->flatMap(fn ($a) => $a->category_ids ?? [])
-                            ->unique()->values();
-                        $labels = $catIds->map(fn ($id) => $categories->get($id) ?? (string) $id)->filter();
-                        return $labels->isEmpty() ? '-' : $labels->implode(' | ');
-                    })
-                );
-        }
-
-        $llmLabels = collect();
-        if ($dataIds->isNotEmpty() && $includeLlmLabel) {
-            $llmLabels = AiScreening::whereIn('data_id', $dataIds)
-                ->whereNotNull('llm_label')
-                ->orderBy('id', 'desc')
-                ->get(['data_id', 'llm_label'])
-                ->groupBy('data_id')
-                ->map(fn ($g) => $g->first()->llm_label);
-        }
-
-        $firstAnnotatorsExport = collect();
-        if ($dataIds->isNotEmpty() && $includeFirstAnnotator) {
-            $firstAnnotByData = Annotation::whereIn('data_id', $dataIds)
-                ->orderBy('created_at', 'asc')
-                ->get(['data_id', 'user_id', 'created_at'])
-                ->groupBy('data_id')
-                ->map(fn ($annots) => $annots->first()->user_id);
-
-            $userNameMap = User::whereIn('id', $firstAnnotByData->values()->unique()->filter())
-                ->pluck('name', 'id');
-
-            $firstAnnotatorsExport = $firstAnnotByData
-                ->map(fn ($userId) => $userNameMap->get($userId, '-'));
-        }
-
-        $phase3DataIdSetExport = collect();
-        if ($dataIds->isNotEmpty() && $includePhase3Data) {
-            $phase3DataIdSetExport = DB::table('package_data')
-                ->join('packages', 'packages.id', '=', 'package_data.package_id')
-                ->where('packages.type', 'phase3')
-                ->whereIn('package_data.data_id', $dataIds->all())
-                ->pluck('package_data.data_id')
-                ->unique()->flip();
-        }
+        $categories = $annotatorUserIds->isNotEmpty()
+            ? Category::pluck('name', 'id')
+            : collect();
 
         $timestamp = Carbon::now()->format('Ymd-His');
         $fileName  = "dataset-{$timestamp}.csv";
 
         return response()->streamDownload(
-            function () use ($dataItems, $columns, $headers, $annotsByDataUser, $llmLabels, $firstAnnotatorsExport, $phase3DataIdSetExport) {
+            function () use ($query, $columns, $headers, $categories, $annotatorUserIds, $includeLlmLabel, $includeFirstAnnotator, $includePhase3Data) {
+                // Headers are already sent at this point: if the script dies
+                // mid-stream (time/memory limit) the client silently receives
+                // a truncated file. Lift the time limit and keep memory flat
+                // by resolving lookups per chunk instead of for the full set.
+                @set_time_limit(0);
+
                 $handle = fopen('php://output', 'w');
+                fwrite($handle, "\xEF\xBB\xBF"); // UTF-8 BOM so Excel decodes multi-byte content
                 fputcsv($handle, $headers);
 
-                foreach ($dataItems as $row) {
-                    $rowData = [];
-                    foreach ($columns as $col) {
-                        if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
-                            $label = $annotsByDataUser->get($row->id, collect())->get((int) $m[1]);
-                            $rowData[] = ($label !== null && $label !== '') ? $label : '-';
-                        } elseif ($col === 'first_annotator') {
-                            $rowData[] = $firstAnnotatorsExport->get($row->id, '-');
-                        } elseif ($col === 'phase3_data') {
-                            $rowData[] = $phase3DataIdSetExport->has($row->id) ? 'Yes' : 'No';
-                        } elseif ($col === 'llm_label') {
-                            $rowData[] = $llmLabels->get($row->id, '-') ?? '-';
-                        } elseif ($col === 'packages_count') {
-                            $rowData[] = (int) ($row->packages_count ?? 0);
-                        } elseif (in_array($col, ['created_at', 'updated_at'], true)) {
-                            $rowData[] = $row->$col ? $row->$col->format('Y-m-d H:i:s') : '';
-                        } else {
-                            $rowData[] = $row->$col ?? '';
-                        }
+                $query->chunk(500, function ($rows) use ($handle, $columns, $categories, $annotatorUserIds, $includeLlmLabel, $includeFirstAnnotator, $includePhase3Data) {
+                    $dataIds = $rows->pluck('id');
+
+                    $annotsByDataUser = collect();
+                    if ($annotatorUserIds->isNotEmpty()) {
+                        $annotations = Annotation::whereIn('data_id', $dataIds)
+                            ->whereIn('user_id', $annotatorUserIds)
+                            ->get(['data_id', 'user_id', 'category_ids']);
+
+                        $annotsByDataUser = $annotations
+                            ->groupBy('data_id')
+                            ->map(fn ($items) =>
+                                $items->groupBy('user_id')->map(function ($userAnnots) use ($categories) {
+                                    $catIds = collect($userAnnots)
+                                        ->flatMap(fn ($a) => $a->category_ids ?? [])
+                                        ->unique()->values();
+                                    $labels = $catIds->map(fn ($id) => $categories->get($id) ?? (string) $id)->filter();
+                                    return $labels->isEmpty() ? '-' : $labels->implode(' | ');
+                                })
+                            );
                     }
-                    fputcsv($handle, $rowData);
-                }
+
+                    $llmLabels = collect();
+                    if ($includeLlmLabel) {
+                        $llmLabels = AiScreening::whereIn('data_id', $dataIds)
+                            ->whereNotNull('llm_label')
+                            ->orderBy('id', 'desc')
+                            ->get(['data_id', 'llm_label'])
+                            ->groupBy('data_id')
+                            ->map(fn ($g) => $g->first()->llm_label);
+                    }
+
+                    $firstAnnotatorsExport = collect();
+                    if ($includeFirstAnnotator) {
+                        $firstAnnotByData = Annotation::whereIn('data_id', $dataIds)
+                            ->orderBy('created_at', 'asc')
+                            ->get(['data_id', 'user_id', 'created_at'])
+                            ->groupBy('data_id')
+                            ->map(fn ($annots) => $annots->first()->user_id);
+
+                        $userNameMap = User::whereIn('id', $firstAnnotByData->values()->unique()->filter())
+                            ->pluck('name', 'id');
+
+                        $firstAnnotatorsExport = $firstAnnotByData
+                            ->map(fn ($userId) => $userNameMap->get($userId, '-'));
+                    }
+
+                    $phase3DataIdSetExport = collect();
+                    if ($includePhase3Data) {
+                        $phase3DataIdSetExport = DB::table('package_data')
+                            ->join('packages', 'packages.id', '=', 'package_data.package_id')
+                            ->where('packages.type', 'phase3')
+                            ->whereIn('package_data.data_id', $dataIds->all())
+                            ->pluck('package_data.data_id')
+                            ->unique()->flip();
+                    }
+
+                    foreach ($rows as $row) {
+                        $rowData = [];
+                        foreach ($columns as $col) {
+                            if (preg_match('/^annotator_(\d+)$/', $col, $m)) {
+                                $label = $annotsByDataUser->get($row->id, collect())->get((int) $m[1]);
+                                $rowData[] = ($label !== null && $label !== '') ? $label : '-';
+                            } elseif ($col === 'first_annotator') {
+                                $rowData[] = $firstAnnotatorsExport->get($row->id, '-');
+                            } elseif ($col === 'phase3_data') {
+                                $rowData[] = $phase3DataIdSetExport->has($row->id) ? 'Yes' : 'No';
+                            } elseif ($col === 'llm_label') {
+                                $rowData[] = $llmLabels->get($row->id, '-') ?? '-';
+                            } elseif ($col === 'packages_count') {
+                                $rowData[] = (int) ($row->packages_count ?? 0);
+                            } elseif (in_array($col, ['created_at', 'updated_at'], true)) {
+                                $rowData[] = $row->$col ? $row->$col->format('Y-m-d H:i:s') : '';
+                            } else {
+                                $rowData[] = $row->$col ?? '';
+                            }
+                        }
+                        fputcsv($handle, $rowData);
+                    }
+
+                    // Push the chunk to the client so no buffer (PHP ob,
+                    // FastCGI, proxy) accumulates the whole file.
+                    if (ob_get_level() > 0) {
+                        @ob_flush();
+                    }
+                    flush();
+                });
 
                 fclose($handle);
             },
