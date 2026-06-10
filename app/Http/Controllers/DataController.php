@@ -526,10 +526,10 @@ class DataController extends Controller
 
         $recordsTotal  = Data::count();
 
-        $filteredQuery = $this->buildDatasetFilteredQuery($request)
-            ->withCount(['packageAssignments as packages_count']);
-
-        $recordsFiltered = (clone $filteredQuery)->count();
+        // Use a plain filtered query for the COUNT so withCount's subselects
+        // don't interfere with the aggregate (avoids SQL errors / wrong totals).
+        $baseFilteredQuery = $this->buildDatasetFilteredQuery($request);
+        $recordsFiltered   = (clone $baseFilteredQuery)->count();
 
         $start  = (int) $request->input('start', 0);
         $length = (int) $request->input('length', 25);
@@ -545,7 +545,8 @@ class DataController extends Controller
         }
         $orderDirection = $request->input('order.0.dir', 'desc') === 'asc' ? 'asc' : 'desc';
 
-        $dataItems = (clone $filteredQuery)
+        $dataItems = (clone $baseFilteredQuery)
+            ->withCount(['packageAssignments as packages_count'])
             ->orderBy($orderColumn, $orderDirection)
             ->skip($start)
             ->take($length)
