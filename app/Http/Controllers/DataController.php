@@ -458,8 +458,12 @@ class DataController extends Controller
         }
 
         // ── Search ─────────────────────────────────────────────────────────
-        // DataTables sends search[value]; plain export URL sends search=…
-        $searchValue = trim((string) ($request->input('search.value') ?: $request->input('search', '')));
+        // DataTables sends search[value]+search[regex] (array); plain export
+        // URL sends search=… (scalar). Handle both without a cast error.
+        $rawSearch   = $request->input('search');
+        $searchValue = trim(is_array($rawSearch)
+            ? (string) ($rawSearch['value'] ?? '')
+            : (string) ($rawSearch ?? ''));
         if ($searchValue !== '') {
             $query->where(function ($q) use ($searchValue) {
                 $q->where('id', 'like', "%{$searchValue}%")
